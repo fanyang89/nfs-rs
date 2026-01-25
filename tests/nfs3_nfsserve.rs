@@ -218,7 +218,10 @@ impl NFSFileSystem for TestFs {
     ) -> Result<ReadDirResult, nfsserve::nfs::nfsstat3> {
         use nfsserve::nfs::nfsstat3;
         let entries: Vec<(u64, Vec<u8>)> = match dirid {
-            ID_EXPORT => vec![(ID_HELLO, b"hello.txt".to_vec()), (ID_SUBDIR, b"subdir".to_vec())],
+            ID_EXPORT => vec![
+                (ID_HELLO, b"hello.txt".to_vec()),
+                (ID_SUBDIR, b"subdir".to_vec()),
+            ],
             ID_SUBDIR => vec![(ID_NESTED, b"nested.txt".to_vec())],
             ID_ROOT => vec![(ID_EXPORT, b"export".to_vec())],
             _ => return Err(nfsstat3::NFS3ERR_NOTDIR),
@@ -304,11 +307,24 @@ async fn nfs3_roundtrip_using_nfsserve() {
     tokio::task::spawn_blocking(move || {
         // portmap GETPORT is faked by nfsserve on the same port.
         let mut pmap = connect_with_retry(&addr);
-        let port_mount = portmap2::getport(&mut pmap, mount3::MOUNT_PROG, mount3::MOUNT_VERS, portmap2::Proto::Tcp)
-            .expect("portmap getport mount");
-        let port_nfs = portmap2::getport(&mut pmap, nfs3::NFS_PROG, nfs3::NFS_VERS, portmap2::Proto::Tcp)
-            .expect("portmap getport nfs");
-        assert_eq!(port_mount, addr.split(':').nth(1).unwrap().parse::<u32>().unwrap());
+        let port_mount = portmap2::getport(
+            &mut pmap,
+            mount3::MOUNT_PROG,
+            mount3::MOUNT_VERS,
+            portmap2::Proto::Tcp,
+        )
+        .expect("portmap getport mount");
+        let port_nfs = portmap2::getport(
+            &mut pmap,
+            nfs3::NFS_PROG,
+            nfs3::NFS_VERS,
+            portmap2::Proto::Tcp,
+        )
+        .expect("portmap getport nfs");
+        assert_eq!(
+            port_mount,
+            addr.split(':').nth(1).unwrap().parse::<u32>().unwrap()
+        );
         assert_eq!(port_nfs, port_mount);
 
         let mut mount = connect_with_retry(&addr);
@@ -328,16 +344,18 @@ async fn nfs3_roundtrip_using_nfsserve() {
         };
 
         // lookup + read
-        let data = c.read_to_end("/hello.txt", 128 * 1024).expect("read_to_end call");
+        let data = c
+            .read_to_end("/hello.txt", 128 * 1024)
+            .expect("read_to_end call");
         let data = data.expect("nfs status ok");
         assert_eq!(data, hello_bytes());
 
         // readdirplus
-        let entries = c.readdirplus_all("/").expect("readdirplus call").expect("nfs status ok");
-        let names: Vec<String> = entries
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
+        let entries = c
+            .readdirplus_all("/")
+            .expect("readdirplus call")
+            .expect("nfs status ok");
+        let names: Vec<String> = entries.into_iter().map(|e| e.name).collect();
         assert!(names.contains(&"hello.txt".to_string()));
         assert!(names.contains(&"subdir".to_string()));
 

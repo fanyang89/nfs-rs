@@ -397,7 +397,7 @@ impl OpsWriter {
         encode_channel_attrs4(w, 0, 1024 * 1024, 1024 * 1024, 1024 * 1024, 64, 16);
 
         w.put_u32(0); // cb_program
-                      // sec_parms<>: one entry AUTH_NONE
+        // sec_parms<>: one entry AUTH_NONE
         w.put_u32(1);
         w.put_u32(0); // AUTH_NONE
     }
