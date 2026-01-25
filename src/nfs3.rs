@@ -11,7 +11,13 @@ pub const NFS_VERS: u32 = 3;
 pub const NFSPROC_GETATTR: u32 = 1;
 pub const NFSPROC_LOOKUP: u32 = 3;
 pub const NFSPROC_READ: u32 = 6;
+pub const NFSPROC_WRITE: u32 = 7;
 pub const NFSPROC_READDIRPLUS: u32 = 17;
+pub const NFSPROC_COMMIT: u32 = 21;
+
+pub const STABLE_HOW_UNSTABLE: u32 = 0;
+pub const STABLE_HOW_DATA_SYNC: u32 = 1;
+pub const STABLE_HOW_FILE_SYNC: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileHandle(pub Vec<u8>);
@@ -35,6 +41,18 @@ pub struct ReadOk {
     pub eof: bool,
     pub data: Vec<u8>,
     pub attributes: Option<Fattr3>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteOk {
+    pub count: u32,
+    pub committed: u32,
+    pub verifier: [u8; 8],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitOk {
+    pub verifier: [u8; 8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +141,47 @@ pub fn read(
     )
 }
 
+pub fn write(
+    rpc: &mut TcpRpcClient,
+    fh: &FileHandle,
+    offset: u64,
+    data: &[u8],
+    stable: u32,
+) -> Result<core::result::Result<WriteOk, NfsError>> {
+    rpc.call(
+        NFS_PROG,
+        NFS_VERS,
+        NFSPROC_WRITE,
+        |w| {
+            w.put_opaque(&fh.0);
+            w.put_u64(offset);
+            w.put_u32(data.len() as u32);
+            w.put_u32(stable);
+            w.put_opaque(data);
+        },
+        decode_write_res,
+    )
+}
+
+pub fn commit(
+    rpc: &mut TcpRpcClient,
+    fh: &FileHandle,
+    offset: u64,
+    count: u32,
+) -> Result<core::result::Result<CommitOk, NfsError>> {
+    rpc.call(
+        NFS_PROG,
+        NFS_VERS,
+        NFSPROC_COMMIT,
+        |w| {
+            w.put_opaque(&fh.0);
+            w.put_u64(offset);
+            w.put_u32(count);
+        },
+        decode_commit_res,
+    )
+}
+
 pub fn readdirplus(
     rpc: &mut TcpRpcClient,
     fh: &FileHandle,
@@ -189,6 +248,36 @@ fn decode_read_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<ReadOk,
     }))
 }
 
+fn decode_write_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<WriteOk, NfsError>> {
+    let status = r.get_u32()?;
+    if status != 0 {
+        let _wcc = decode_wcc_data(r)?;
+        return Ok(Err(NfsError { status }));
+    }
+    let _wcc = decode_wcc_data(r)?;
+    let count = r.get_u32()?;
+    let committed = r.get_u32()?;
+    let v = r.get_opaque_fixed(8)?;
+    let verifier: [u8; 8] = v.as_slice().try_into().unwrap();
+    Ok(Ok(WriteOk {
+        count,
+        committed,
+        verifier,
+    }))
+}
+
+fn decode_commit_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<CommitOk, NfsError>> {
+    let status = r.get_u32()?;
+    if status != 0 {
+        let _wcc = decode_wcc_data(r)?;
+        return Ok(Err(NfsError { status }));
+    }
+    let _wcc = decode_wcc_data(r)?;
+    let v = r.get_opaque_fixed(8)?;
+    let verifier: [u8; 8] = v.as_slice().try_into().unwrap();
+    Ok(Ok(CommitOk { verifier }))
+}
+
 fn decode_readdirplus_res(
     r: &mut XdrReader<'_>,
 ) -> Result<core::result::Result<ReadDirPlusOk, NfsError>> {
@@ -245,6 +334,19 @@ fn decode_post_op_attr(r: &mut XdrReader<'_>) -> Result<Option<Fattr3>> {
         return Ok(None);
     }
     Ok(Some(decode_fattr3(r)?))
+}
+
+fn decode_wcc_data(r: &mut XdrReader<'_>) -> Result<()> {
+    let before = r.get_bool()?;
+    if before {
+        let _size = r.get_u64()?;
+        let _mtime_s = r.get_u32()?;
+        let _mtime_ns = r.get_u32()?;
+        let _ctime_s = r.get_u32()?;
+        let _ctime_ns = r.get_u32()?;
+    }
+    let _after = decode_post_op_attr(r)?;
+    Ok(())
 }
 
 fn decode_fattr3(r: &mut XdrReader<'_>) -> Result<Fattr3> {

@@ -9,3 +9,4 @@ pub mod client;
 
 pub mod client41;
 pub mod nfs4;
+pub mod pnfs;

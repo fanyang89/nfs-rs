@@ -20,18 +20,46 @@ pub const OP_OPEN: u32 = 18;
 pub const OP_PUTFH: u32 = 22;
 pub const OP_PUTROOTFH: u32 = 24;
 pub const OP_READ: u32 = 25;
+pub const OP_WRITE: u32 = 38;
 
 pub const OP_EXCHANGE_ID: u32 = 42;
 pub const OP_CREATE_SESSION: u32 = 43;
+pub const OP_GETDEVICEINFO: u32 = 47;
+pub const OP_LAYOUTCOMMIT: u32 = 49;
+pub const OP_LAYOUTGET: u32 = 50;
+pub const OP_LAYOUTRETURN: u32 = 51;
 pub const OP_SEQUENCE: u32 = 53;
 
 // OPEN share access/deny flags (subset)
 pub const OPEN4_SHARE_ACCESS_READ: u32 = 0x0000_0001;
+pub const OPEN4_SHARE_ACCESS_WRITE: u32 = 0x0000_0002;
 pub const OPEN4_SHARE_DENY_NONE: u32 = 0x0000_0000;
 pub const OPEN4_SHARE_ACCESS_WANT_NO_DELEG: u32 = 0x0000_0400;
 
 // EXCHANGE_ID flags (subset)
 pub const EXCHGID4_FLAG_USE_NON_PNFS: u32 = 0x0001_0000;
+pub const EXCHGID4_FLAG_USE_PNFS_MDS: u32 = 0x0002_0000;
+pub const EXCHGID4_FLAG_USE_PNFS_DS: u32 = 0x0004_0000;
+
+pub const LAYOUT4_FLEX_FILES: u32 = 0x0000_0004;
+
+pub const FF_FLAGS_NO_LAYOUTCOMMIT: u32 = 0x0000_0001;
+pub const FF_FLAGS_NO_IO_THRU_MDS: u32 = 0x0000_0002;
+pub const FF_FLAGS_NO_READ_IO: u32 = 0x0000_0004;
+pub const FF_FLAGS_WRITE_ONE_MIRROR: u32 = 0x0000_0008;
+
+pub const LAYOUTIOMODE4_READ: u32 = 1;
+pub const LAYOUTIOMODE4_RW: u32 = 2;
+pub const LAYOUTIOMODE4_ANY: u32 = 3;
+
+pub const LAYOUTRETURN4_FILE: u32 = 1;
+
+pub const STABLE_HOW_UNSTABLE4: u32 = 0;
+pub const STABLE_HOW_DATA_SYNC4: u32 = 1;
+pub const STABLE_HOW_FILE_SYNC4: u32 = 2;
+
+pub const NFS4ERR_TOOSMALL: u32 = 10005;
+pub const NFS4ERR_LAYOUTTRYLATER: u32 = 10058;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Nfs4Error {
@@ -95,6 +123,98 @@ impl StateId4 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DeviceId4(pub [u8; 16]);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetAddr4 {
+    pub netid: String,
+    pub addr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfDeviceVersion4 {
+    pub version: u32,
+    pub minorversion: u32,
+    pub rsize: u32,
+    pub wsize: u32,
+    pub tightly_coupled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfDeviceAddr4 {
+    pub netaddrs: Vec<NetAddr4>,
+    pub versions: Vec<FfDeviceVersion4>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfDataServer4 {
+    pub deviceid: DeviceId4,
+    pub efficiency: u32,
+    pub stateid: StateId4,
+    pub fh_list: Vec<Vec<u8>>,
+    pub user: String,
+    pub group: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfMirror4 {
+    pub data_servers: Vec<FfDataServer4>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfLayout4 {
+    pub stripe_unit: u64,
+    pub mirrors: Vec<FfMirror4>,
+    pub flags: u32,
+    pub stats_hint: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutContent4 {
+    FlexFiles(FfLayout4),
+    Opaque { layout_type: u32, body: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout4 {
+    pub offset: u64,
+    pub length: u64,
+    pub iomode: u32,
+    pub content: LayoutContent4,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceAddr4 {
+    FlexFiles(FfDeviceAddr4),
+    Opaque { layout_type: u32, body: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutGetOk {
+    pub return_on_close: bool,
+    pub stateid: StateId4,
+    pub layout: Vec<Layout4>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetDeviceInfoOk {
+    pub device_addr: DeviceAddr4,
+    pub notify_mask: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutCommitOk {
+    pub new_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteOk {
+    pub count: u32,
+    pub committed: u32,
+    pub verifier: [u8; 8],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenOk {
     pub stateid: StateId4,
@@ -135,16 +255,59 @@ pub struct ReadArgs<'a> {
     pub count: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct WriteArgs<'a> {
+    pub fh: &'a [u8],
+    pub stateid: &'a StateId4,
+    pub offset: u64,
+    pub data: &'a [u8],
+    pub stable_how: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LayoutGetArgs<'a> {
+    pub fh: &'a [u8],
+    pub stateid: &'a StateId4,
+    pub avail: bool,
+    pub layout_type: u32,
+    pub iomode: u32,
+    pub offset: u64,
+    pub length: u64,
+    pub minlength: u64,
+    pub maxcount: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LayoutCommitArgs<'a> {
+    pub fh: &'a [u8],
+    pub offset: u64,
+    pub length: u64,
+    pub reclaim: bool,
+    pub stateid: &'a StateId4,
+    pub last_write_offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LayoutReturnArgs<'a> {
+    pub fh: &'a [u8],
+    pub reclaim: bool,
+    pub iomode: u32,
+    pub offset: u64,
+    pub length: u64,
+    pub stateid: &'a StateId4,
+}
+
 pub fn exchange_id(
     rpc: &mut TcpRpcClient,
     owner: &ClientOwner4,
+    flags: u32,
 ) -> Result<core::result::Result<ExchangeIdOk, Nfs4Error>> {
     compound(
         rpc,
         NFS4_MIN_VERSION_1,
         "exchid",
         |ops| {
-            ops.exchange_id(owner);
+            ops.exchange_id(owner, flags);
         },
         |r| {
             let res = decode_compound_res(r)?;
@@ -213,6 +376,22 @@ pub fn compound_with_session_open_getfh(
     open: OpenOwner<'_>,
     path: OpenPath<'_>,
 ) -> Nfs4Call<OpenGetFhOk> {
+    compound_with_session_open_getfh_access(
+        rpc,
+        sess,
+        open,
+        path,
+        OPEN4_SHARE_ACCESS_READ | OPEN4_SHARE_ACCESS_WANT_NO_DELEG,
+    )
+}
+
+pub fn compound_with_session_open_getfh_access(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    open: OpenOwner<'_>,
+    path: OpenPath<'_>,
+    access: u32,
+) -> Nfs4Call<OpenGetFhOk> {
     compound(
         rpc,
         NFS4_MIN_VERSION_1,
@@ -223,7 +402,7 @@ pub fn compound_with_session_open_getfh(
             for comp in path.dir_path.split('/').filter(|s| !s.is_empty()) {
                 ops.lookup(comp);
             }
-            ops.open_readonly_claim_null(open.clientid, open.owner, open.seqid, path.name);
+            ops.open_claim_null(open.clientid, open.owner, open.seqid, path.name, access);
             ops.getfh();
         },
         |r| {
@@ -326,6 +505,158 @@ pub fn compound_with_session_putfh_read_stateid(
     )
 }
 
+pub fn compound_with_session_putfh_write_stateid(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    args: WriteArgs<'_>,
+) -> Result<core::result::Result<(SequenceOk, WriteOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "write",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(args.fh);
+            ops.write_stateid(args.stateid, args.offset, args.stable_how, args.data);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let wr = res.expect_write()?;
+            Ok(match (seqok, wr) {
+                (Ok(s), Ok(w)) => Ok((s, w)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_layoutget(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    args: LayoutGetArgs<'_>,
+) -> Result<core::result::Result<(SequenceOk, LayoutGetOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "layoutget",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(args.fh);
+            ops.layoutget(&args);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let lg = res.expect_layoutget()?;
+            Ok(match (seqok, lg) {
+                (Ok(s), Ok(v)) => Ok((s, v)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_getdeviceinfo(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    deviceid: &DeviceId4,
+    layout_type: u32,
+    maxcount: u32,
+    notify_mask: &[u32],
+) -> Result<core::result::Result<(SequenceOk, GetDeviceInfoOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "getdevinfo",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.getdeviceinfo(deviceid, layout_type, maxcount, notify_mask);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let gd = res.expect_getdeviceinfo()?;
+            Ok(match (seqok, gd) {
+                (Ok(s), Ok(v)) => Ok((s, v)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_layoutcommit(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    args: LayoutCommitArgs<'_>,
+) -> Result<core::result::Result<(SequenceOk, LayoutCommitOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "layoutcommit",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(args.fh);
+            ops.layoutcommit(&args);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let lc = res.expect_layoutcommit()?;
+            Ok(match (seqok, lc) {
+                (Ok(s), Ok(v)) => Ok((s, v)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_layoutreturn(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    args: LayoutReturnArgs<'_>,
+) -> Result<core::result::Result<(SequenceOk, Option<StateId4>), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "layoutreturn",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(args.fh);
+            ops.layoutreturn_flexfiles(&args);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let lr = res.expect_layoutreturn()?;
+            Ok(match (seqok, lr) {
+                (Ok(s), Ok(v)) => Ok((s, v)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
 fn compound<T>(
     rpc: &mut TcpRpcClient,
     minor: u32,
@@ -372,13 +703,13 @@ impl OpsWriter {
         &mut self.w
     }
 
-    fn exchange_id(&mut self, owner: &ClientOwner4) {
+    fn exchange_id(&mut self, owner: &ClientOwner4, flags: u32) {
         let w = self.push(OP_EXCHANGE_ID);
         // client_owner4
         w.put_opaque_fixed(&owner.verifier);
         w.put_opaque(&owner.ownerid);
 
-        w.put_u32(EXCHGID4_FLAG_USE_NON_PNFS);
+        w.put_u32(flags);
 
         // state_protect4_a: SP4_NONE
         w.put_u32(0);
@@ -397,7 +728,7 @@ impl OpsWriter {
         encode_channel_attrs4(w, 0, 1024 * 1024, 1024 * 1024, 1024 * 1024, 64, 16);
 
         w.put_u32(0); // cb_program
-        // sec_parms<>: one entry AUTH_NONE
+                      // sec_parms<>: one entry AUTH_NONE
         w.put_u32(1);
         w.put_u32(0); // AUTH_NONE
     }
@@ -429,10 +760,17 @@ impl OpsWriter {
         w.put_opaque(fh);
     }
 
-    fn open_readonly_claim_null(&mut self, clientid: u64, owner: &[u8], seqid: u32, name: &str) {
+    fn open_claim_null(
+        &mut self,
+        clientid: u64,
+        owner: &[u8],
+        seqid: u32,
+        name: &str,
+        access: u32,
+    ) {
         let w = self.push(OP_OPEN);
         w.put_u32(seqid);
-        w.put_u32(OPEN4_SHARE_ACCESS_READ | OPEN4_SHARE_ACCESS_WANT_NO_DELEG);
+        w.put_u32(access);
         w.put_u32(OPEN4_SHARE_DENY_NONE);
 
         // open_owner4 == state_owner4 { clientid4, opaque owner<> }
@@ -458,6 +796,82 @@ impl OpsWriter {
         encode_stateid4(w, stateid.seqid, stateid.other);
         w.put_u64(offset);
         w.put_u32(count);
+    }
+
+    fn write_stateid(&mut self, stateid: &StateId4, offset: u64, stable_how: u32, data: &[u8]) {
+        let w = self.push(OP_WRITE);
+        encode_stateid4(w, stateid.seqid, stateid.other);
+        w.put_u64(offset);
+        w.put_u32(stable_how);
+        w.put_opaque(data);
+    }
+
+    fn getdeviceinfo(
+        &mut self,
+        deviceid: &DeviceId4,
+        layout_type: u32,
+        maxcount: u32,
+        notify_mask: &[u32],
+    ) {
+        let w = self.push(OP_GETDEVICEINFO);
+        w.put_opaque_fixed(&deviceid.0);
+        w.put_u32(layout_type);
+        w.put_u32(maxcount);
+        w.put_vec(notify_mask, |w, v| w.put_u32(*v));
+    }
+
+    fn layoutget(&mut self, args: &LayoutGetArgs<'_>) {
+        let w = self.push(OP_LAYOUTGET);
+        w.put_bool(args.avail);
+        w.put_u32(args.layout_type);
+        w.put_u32(args.iomode);
+        w.put_u64(args.offset);
+        w.put_u64(args.length);
+        w.put_u64(args.minlength);
+        encode_stateid4(w, args.stateid.seqid, args.stateid.other);
+        w.put_u32(args.maxcount);
+    }
+
+    fn layoutcommit(&mut self, args: &LayoutCommitArgs<'_>) {
+        let w = self.push(OP_LAYOUTCOMMIT);
+        w.put_u64(args.offset);
+        w.put_u64(args.length);
+        w.put_bool(args.reclaim);
+        encode_stateid4(w, args.stateid.seqid, args.stateid.other);
+
+        match args.last_write_offset {
+            Some(v) => {
+                w.put_bool(true);
+                w.put_u64(v);
+            }
+            None => w.put_bool(false),
+        }
+
+        // newtime4: not updating mtime
+        w.put_bool(false);
+
+        // layoutupdate4: type + empty body
+        w.put_u32(LAYOUT4_FLEX_FILES);
+        w.put_opaque(&[]);
+    }
+
+    fn layoutreturn_flexfiles(&mut self, args: &LayoutReturnArgs<'_>) {
+        let w = self.push(OP_LAYOUTRETURN);
+        w.put_bool(args.reclaim);
+        w.put_u32(LAYOUT4_FLEX_FILES);
+        w.put_u32(args.iomode);
+
+        // layoutreturn4: return FILE range
+        w.put_u32(LAYOUTRETURN4_FILE);
+        w.put_u64(args.offset);
+        w.put_u64(args.length);
+        encode_stateid4(w, args.stateid.seqid, args.stateid.other);
+
+        // layoutreturn_file_body4 for flexfiles (empty report)
+        w.put_u32(LAYOUT4_FLEX_FILES);
+        w.put_u32(0); // size
+        w.put_u32(0); // ioerr_report len
+        w.put_u32(0); // iostats_report len
     }
 }
 
@@ -503,6 +917,11 @@ enum ResOp {
     Open(core::result::Result<OpenOk, u32>),
     Close(core::result::Result<StateId4, u32>),
     Read(core::result::Result<ReadOk, u32>),
+    Write(core::result::Result<WriteOk, u32>),
+    LayoutGet(core::result::Result<LayoutGetOk, u32>),
+    GetDeviceInfo(core::result::Result<GetDeviceInfoOk, u32>),
+    LayoutCommit(core::result::Result<LayoutCommitOk, u32>),
+    LayoutReturn(core::result::Result<Option<StateId4>, u32>),
     Unknown { op: u32, status: u32 },
 }
 
@@ -520,6 +939,11 @@ impl CompoundRes {
                 ResOp::Open(Err(st)) => (OP_OPEN, *st),
                 ResOp::Close(Err(st)) => (OP_CLOSE, *st),
                 ResOp::Read(Err(st)) => (OP_READ, *st),
+                ResOp::Write(Err(st)) => (OP_WRITE, *st),
+                ResOp::LayoutGet(Err(st)) => (OP_LAYOUTGET, *st),
+                ResOp::GetDeviceInfo(Err(st)) => (OP_GETDEVICEINFO, *st),
+                ResOp::LayoutCommit(Err(st)) => (OP_LAYOUTCOMMIT, *st),
+                ResOp::LayoutReturn(Err(st)) => (OP_LAYOUTRETURN, *st),
                 ResOp::Unknown { op, status } if *status != 0 => (*op, *status),
                 _ => continue,
             };
@@ -654,6 +1078,96 @@ impl CompoundRes {
         Ok(Err(Nfs4Error {
             status: self.status,
             op: Some(OP_READ),
+        }))
+    }
+
+    fn expect_write(&self) -> Result<core::result::Result<WriteOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::Write(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_WRITE),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_WRITE),
+        }))
+    }
+
+    fn expect_layoutget(&self) -> Result<core::result::Result<LayoutGetOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::LayoutGet(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_LAYOUTGET),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_LAYOUTGET),
+        }))
+    }
+
+    fn expect_getdeviceinfo(&self) -> Result<core::result::Result<GetDeviceInfoOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::GetDeviceInfo(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_GETDEVICEINFO),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_GETDEVICEINFO),
+        }))
+    }
+
+    fn expect_layoutcommit(&self) -> Result<core::result::Result<LayoutCommitOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::LayoutCommit(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_LAYOUTCOMMIT),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_LAYOUTCOMMIT),
+        }))
+    }
+
+    fn expect_layoutreturn(&self) -> Result<core::result::Result<Option<StateId4>, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::LayoutReturn(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_LAYOUTRETURN),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_LAYOUTRETURN),
         }))
     }
 }
@@ -816,6 +1330,79 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
             let data = r.get_opaque()?;
             Ok(ResOp::Read(Ok(ReadOk { eof, data })))
         }
+        OP_WRITE => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::Write(Err(st)));
+            }
+            let count = r.get_u32()?;
+            let committed = r.get_u32()?;
+            let verf = r.get_opaque_fixed(8)?;
+            let verifier: [u8; 8] = verf.as_slice().try_into().unwrap();
+            Ok(ResOp::Write(Ok(WriteOk {
+                count,
+                committed,
+                verifier,
+            })))
+        }
+        OP_GETDEVICEINFO => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                if st == NFS4ERR_TOOSMALL {
+                    let _mincount = r.get_u32()?;
+                }
+                return Ok(ResOp::GetDeviceInfo(Err(st)));
+            }
+            let device_addr = decode_device_addr4(r)?;
+            let notify_mask = r.get_vec(|r| r.get_u32())?;
+            Ok(ResOp::GetDeviceInfo(Ok(GetDeviceInfoOk {
+                device_addr,
+                notify_mask,
+            })))
+        }
+        OP_LAYOUTGET => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                if st == NFS4ERR_LAYOUTTRYLATER {
+                    let _signal = r.get_bool()?;
+                }
+                return Ok(ResOp::LayoutGet(Err(st)));
+            }
+            let return_on_close = r.get_bool()?;
+            let stateid = decode_stateid4(r)?;
+            let layout = r.get_vec(decode_layout4)?;
+            Ok(ResOp::LayoutGet(Ok(LayoutGetOk {
+                return_on_close,
+                stateid,
+                layout,
+            })))
+        }
+        OP_LAYOUTCOMMIT => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::LayoutCommit(Err(st)));
+            }
+            let sizechanged = r.get_bool()?;
+            let new_size = if sizechanged {
+                Some(r.get_u64()?)
+            } else {
+                None
+            };
+            Ok(ResOp::LayoutCommit(Ok(LayoutCommitOk { new_size })))
+        }
+        OP_LAYOUTRETURN => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::LayoutReturn(Err(st)));
+            }
+            let present = r.get_bool()?;
+            let stateid = if present {
+                Some(decode_stateid4(r)?)
+            } else {
+                None
+            };
+            Ok(ResOp::LayoutReturn(Ok(stateid)))
+        }
         other => {
             // Best-effort: most NFSv4 res types start with nfsstat4.
             let st = r.get_u32()?;
@@ -827,11 +1414,117 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
     }
 }
 
-fn decode_stateid4(r: &mut XdrReader<'_>) -> Result<StateId4> {
+fn decode_stateid4(r: &mut XdrReader<'_>) -> crate::xdr::Result<StateId4> {
     let seqid = r.get_u32()?;
     let other_v = r.get_opaque_fixed(12)?;
     let other: [u8; 12] = other_v.as_slice().try_into().unwrap();
     Ok(StateId4 { seqid, other })
+}
+
+fn decode_deviceid4(r: &mut XdrReader<'_>) -> crate::xdr::Result<DeviceId4> {
+    let v = r.get_opaque_fixed(16)?;
+    let id: [u8; 16] = v.as_slice().try_into().unwrap();
+    Ok(DeviceId4(id))
+}
+
+fn decode_netaddr4(r: &mut XdrReader<'_>) -> crate::xdr::Result<NetAddr4> {
+    Ok(NetAddr4 {
+        netid: r.get_string()?,
+        addr: r.get_string()?,
+    })
+}
+
+fn decode_ff_device_version4(r: &mut XdrReader<'_>) -> crate::xdr::Result<FfDeviceVersion4> {
+    let version = r.get_u32()?;
+    let minorversion = r.get_u32()?;
+    let rsize = r.get_u32()?;
+    let wsize = r.get_u32()?;
+    let tightly_coupled = r.get_bool()?;
+    Ok(FfDeviceVersion4 {
+        version,
+        minorversion,
+        rsize,
+        wsize,
+        tightly_coupled,
+    })
+}
+
+fn decode_ff_device_addr4(r: &mut XdrReader<'_>) -> crate::xdr::Result<FfDeviceAddr4> {
+    let _size = r.get_u32()?;
+    let netaddrs = r.get_vec(decode_netaddr4)?;
+    let versions = r.get_vec(decode_ff_device_version4)?;
+    Ok(FfDeviceAddr4 { netaddrs, versions })
+}
+
+fn decode_ff_data_server4(r: &mut XdrReader<'_>) -> crate::xdr::Result<FfDataServer4> {
+    let deviceid = decode_deviceid4(r)?;
+    let efficiency = r.get_u32()?;
+    let stateid = decode_stateid4(r)?;
+    let fh_list = r.get_vec(|r| r.get_opaque())?;
+    let user = r.get_string()?;
+    let group = r.get_string()?;
+    Ok(FfDataServer4 {
+        deviceid,
+        efficiency,
+        stateid,
+        fh_list,
+        user,
+        group,
+    })
+}
+
+fn decode_ff_mirror4(r: &mut XdrReader<'_>) -> crate::xdr::Result<FfMirror4> {
+    let data_servers = r.get_vec(decode_ff_data_server4)?;
+    Ok(FfMirror4 { data_servers })
+}
+
+fn decode_ff_layout4(r: &mut XdrReader<'_>) -> crate::xdr::Result<FfLayout4> {
+    let _size = r.get_u32()?;
+    let stripe_unit = r.get_u64()?;
+    let mirrors = r.get_vec(decode_ff_mirror4)?;
+    let flags = r.get_u32()?;
+    let stats_hint = r.get_u32()?;
+    Ok(FfLayout4 {
+        stripe_unit,
+        mirrors,
+        flags,
+        stats_hint,
+    })
+}
+
+fn decode_layout_content4(r: &mut XdrReader<'_>) -> crate::xdr::Result<LayoutContent4> {
+    let layout_type = r.get_u32()?;
+    match layout_type {
+        LAYOUT4_FLEX_FILES => Ok(LayoutContent4::FlexFiles(decode_ff_layout4(r)?)),
+        _ => Ok(LayoutContent4::Opaque {
+            layout_type,
+            body: r.get_opaque()?,
+        }),
+    }
+}
+
+fn decode_layout4(r: &mut XdrReader<'_>) -> crate::xdr::Result<Layout4> {
+    let offset = r.get_u64()?;
+    let length = r.get_u64()?;
+    let iomode = r.get_u32()?;
+    let content = decode_layout_content4(r)?;
+    Ok(Layout4 {
+        offset,
+        length,
+        iomode,
+        content,
+    })
+}
+
+fn decode_device_addr4(r: &mut XdrReader<'_>) -> crate::xdr::Result<DeviceAddr4> {
+    let layout_type = r.get_u32()?;
+    match layout_type {
+        LAYOUT4_FLEX_FILES => Ok(DeviceAddr4::FlexFiles(decode_ff_device_addr4(r)?)),
+        _ => Ok(DeviceAddr4::Opaque {
+            layout_type,
+            body: r.get_opaque()?,
+        }),
+    }
 }
 
 fn skip_change_info4(r: &mut XdrReader<'_>) -> Result<()> {
@@ -934,5 +1627,61 @@ mod tests {
         let b = w.into_bytes();
         assert_eq!(b.len(), 16);
         assert!(b.iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn flexfiles_layout_roundtrip() {
+        let layout = FfLayout4 {
+            stripe_unit: 4096,
+            mirrors: vec![FfMirror4 {
+                data_servers: vec![FfDataServer4 {
+                    deviceid: DeviceId4([0x11; 16]),
+                    efficiency: 7,
+                    stateid: StateId4 {
+                        seqid: 3,
+                        other: [0x22; 12],
+                    },
+                    fh_list: vec![vec![1, 2, 3, 4]],
+                    user: "1000".into(),
+                    group: "1000".into(),
+                }],
+            }],
+            flags: 0,
+            stats_hint: 0,
+        };
+
+        let mut w = XdrWriter::new();
+        encode_ff_layout4(&mut w, &layout);
+        let bytes = w.into_bytes();
+        let mut r = XdrReader::new(&bytes);
+        let decoded = decode_ff_layout4(&mut r).unwrap();
+
+        assert_eq!(decoded.stripe_unit, layout.stripe_unit);
+        assert_eq!(decoded.flags, layout.flags);
+        assert_eq!(decoded.stats_hint, layout.stats_hint);
+        assert_eq!(decoded.mirrors.len(), 1);
+        let ds = &decoded.mirrors[0].data_servers[0];
+        assert_eq!(ds.deviceid, layout.mirrors[0].data_servers[0].deviceid);
+        assert_eq!(ds.efficiency, 7);
+        assert_eq!(ds.fh_list[0], vec![1, 2, 3, 4]);
+        assert_eq!(ds.user, "1000");
+        assert_eq!(ds.group, "1000");
+    }
+
+    fn encode_ff_layout4(w: &mut XdrWriter, layout: &FfLayout4) {
+        w.put_u32(0); // size (ignored by decoder)
+        w.put_u64(layout.stripe_unit);
+        w.put_vec(&layout.mirrors, |w, mirror| {
+            w.put_vec(&mirror.data_servers, |w, ds| {
+                w.put_opaque_fixed(&ds.deviceid.0);
+                w.put_u32(ds.efficiency);
+                encode_stateid4(w, ds.stateid.seqid, ds.stateid.other);
+                w.put_vec(&ds.fh_list, |w, fh| w.put_opaque(fh));
+                w.put_string(&ds.user);
+                w.put_string(&ds.group);
+            });
+        });
+        w.put_u32(layout.flags);
+        w.put_u32(layout.stats_hint);
     }
 }
