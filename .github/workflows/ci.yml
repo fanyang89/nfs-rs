@@ -37,3 +37,30 @@ jobs:
 
       - name: Build examples
         run: cargo build --examples
+
+  harness:
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install QEMU + cloud tools
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils
+
+      - name: Start NFSv4.1 VM harness
+        run: ./scripts/vm/nfs41-up.sh
+
+      - name: Harness tests
+        run: cargo test --test nfs41_vm -- --ignored
+
+      - name: Stop NFSv4.1 VM harness
+        if: always()
+        run: ./scripts/vm/nfs41-down.sh
