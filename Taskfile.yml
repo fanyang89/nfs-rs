@@ -1,0 +1,35 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build crate + examples
+    cmds:
+      - cargo build
+      - cargo build --examples
+
+  fmt:
+    desc: Format Rust code
+    cmds:
+      - cargo fmt
+
+  unit-tests:
+    desc: Run fast unit/integration tests (hermetic)
+    cmds:
+      - cargo test
+
+  harness-tests:
+    desc: Run ignored integration tests (requires local QEMU VM)
+    deps:
+      - vm-up
+    cmds:
+      - cargo test --test nfs41_vm -- --ignored
+
+  vm-up:
+    desc: Start local NFSv4.1 QEMU VM
+    cmds:
+      - ./scripts/vm/nfs41-up.sh
+
+  vm-down:
+    desc: Stop local NFSv4.1 QEMU VM
+    cmds:
+      - ./scripts/vm/nfs41-down.sh
