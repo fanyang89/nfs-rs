@@ -27,7 +27,7 @@ pub fn mnt(
         MOUNT_VERS,
         MOUNTPROC_MNT,
         |w| w.put_string(export),
-        |r| decode_mnt_res(r),
+        decode_mnt_res,
     )
 }
 
@@ -38,7 +38,7 @@ fn decode_mnt_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<MountOk,
     }
     // fhandle3 is opaque<64>
     let fh = r.get_opaque()?;
-    let auth_flavors = r.get_vec(|r| Ok(r.get_u32()?))?;
+    let auth_flavors = r.get_vec(|r| r.get_u32())?;
     Ok(Ok(MountOk { fh, auth_flavors }))
 }
 

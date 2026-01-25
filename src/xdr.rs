@@ -95,7 +95,7 @@ impl XdrWriter {
 
     fn pad_to_4(&mut self) {
         let pad = (4 - (self.buf.len() % 4)) % 4;
-        self.buf.extend(core::iter::repeat(0u8).take(pad));
+        self.buf.extend(core::iter::repeat_n(0u8, pad));
     }
 }
 

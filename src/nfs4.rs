@@ -13,8 +13,10 @@ pub const NFSPROC4_COMPOUND: u32 = 1;
 pub const NFS4_MIN_VERSION_1: u32 = 1;
 
 // NFS operation numbers (subset)
+pub const OP_CLOSE: u32 = 4;
 pub const OP_GETFH: u32 = 10;
 pub const OP_LOOKUP: u32 = 15;
+pub const OP_OPEN: u32 = 18;
 pub const OP_PUTFH: u32 = 22;
 pub const OP_PUTROOTFH: u32 = 24;
 pub const OP_READ: u32 = 25;
@@ -22,6 +24,11 @@ pub const OP_READ: u32 = 25;
 pub const OP_EXCHANGE_ID: u32 = 42;
 pub const OP_CREATE_SESSION: u32 = 43;
 pub const OP_SEQUENCE: u32 = 53;
+
+// OPEN share access/deny flags (subset)
+pub const OPEN4_SHARE_ACCESS_READ: u32 = 0x0000_0001;
+pub const OPEN4_SHARE_DENY_NONE: u32 = 0x0000_0000;
+pub const OPEN4_SHARE_ACCESS_WANT_NO_DELEG: u32 = 0x0000_0400;
 
 // EXCHANGE_ID flags (subset)
 pub const EXCHGID4_FLAG_USE_NON_PNFS: u32 = 0x0001_0000;
@@ -71,6 +78,61 @@ pub struct SequenceOk {
 pub struct ReadOk {
     pub eof: bool,
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateId4 {
+    pub seqid: u32,
+    pub other: [u8; 12],
+}
+
+impl StateId4 {
+    pub fn special() -> Self {
+        Self {
+            seqid: 0,
+            other: [0u8; 12],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenOk {
+    pub stateid: StateId4,
+    pub rflags: u32,
+}
+
+pub type Nfs4Res<T> = core::result::Result<T, Nfs4Error>;
+pub type Nfs4Call<T> = Result<Nfs4Res<T>>;
+
+pub type OpenGetFhOk = (SequenceOk, OpenOk, Vec<u8>);
+pub type ReadCallOk = (SequenceOk, ReadOk);
+
+#[derive(Debug, Clone, Copy)]
+pub struct SessionArgs {
+    pub sessionid: [u8; 16],
+    pub seq: u32,
+    pub slot: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OpenOwner<'a> {
+    pub clientid: u64,
+    pub owner: &'a [u8],
+    pub seqid: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OpenPath<'a> {
+    pub dir_path: &'a str,
+    pub name: &'a str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ReadArgs<'a> {
+    pub fh: &'a [u8],
+    pub stateid: &'a StateId4,
+    pub offset: u64,
+    pub count: u32,
 }
 
 pub fn exchange_id(
@@ -145,23 +207,108 @@ pub fn compound_with_session_lookup_getfh(
     )
 }
 
-pub fn compound_with_session_putfh_read(
+pub fn compound_with_session_open_getfh(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    open: OpenOwner<'_>,
+    path: OpenPath<'_>,
+) -> Nfs4Call<OpenGetFhOk> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "open",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putrootfh();
+            for comp in path.dir_path.split('/').filter(|s| !s.is_empty()) {
+                ops.lookup(comp);
+            }
+            ops.open_readonly_claim_null(open.clientid, open.owner, open.seqid, path.name);
+            ops.getfh();
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let opok = res.expect_open()?;
+            let fh = res.expect_getfh()?;
+            Ok(match (seqok, opok, fh) {
+                (Ok(s), Ok(o), Ok(fh)) => Ok((s, o, fh)),
+                (Err(e), _, _) => Err(e),
+                (_, Err(e), _) => Err(e),
+                (_, _, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_close(
     rpc: &mut TcpRpcClient,
     sessionid: [u8; 16],
     seq: u32,
     slot: u32,
     fh: &[u8],
+    close_seqid: u32,
+    stateid: &StateId4,
+) -> Result<core::result::Result<SequenceOk, Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "close",
+        |ops| {
+            ops.sequence(sessionid, seq, slot);
+            ops.putfh(fh);
+            ops.close(close_seqid, stateid);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let _closed = match res.expect_close()? {
+                Ok(v) => v,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(seqok)
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_read(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    fh: &[u8],
     offset: u64,
     count: u32,
-) -> Result<core::result::Result<(SequenceOk, ReadOk), Nfs4Error>> {
+) -> Nfs4Call<ReadCallOk> {
+    compound_with_session_putfh_read_stateid(
+        rpc,
+        sess,
+        ReadArgs {
+            fh,
+            stateid: &StateId4::special(),
+            offset,
+            count,
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_read_stateid(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    args: ReadArgs<'_>,
+) -> Nfs4Call<ReadCallOk> {
     compound(
         rpc,
         NFS4_MIN_VERSION_1,
         "read",
         |ops| {
-            ops.sequence(sessionid, seq, slot);
-            ops.putfh(fh);
-            ops.read(offset, count);
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(args.fh);
+            ops.read_stateid(args.stateid, args.offset, args.count);
         },
         |r| {
             let res = decode_compound_res(r)?;
@@ -282,9 +429,33 @@ impl OpsWriter {
         w.put_opaque(fh);
     }
 
-    fn read(&mut self, offset: u64, count: u32) {
+    fn open_readonly_claim_null(&mut self, clientid: u64, owner: &[u8], seqid: u32, name: &str) {
+        let w = self.push(OP_OPEN);
+        w.put_u32(seqid);
+        w.put_u32(OPEN4_SHARE_ACCESS_READ | OPEN4_SHARE_ACCESS_WANT_NO_DELEG);
+        w.put_u32(OPEN4_SHARE_DENY_NONE);
+
+        // open_owner4 == state_owner4 { clientid4, opaque owner<> }
+        w.put_u64(clientid);
+        w.put_opaque(owner);
+
+        // openflag4: OPEN4_NOCREATE
+        w.put_u32(0);
+
+        // open_claim4: CLAIM_NULL + component4 name
+        w.put_u32(0);
+        w.put_string(name);
+    }
+
+    fn close(&mut self, seqid: u32, stateid: &StateId4) {
+        let w = self.push(OP_CLOSE);
+        w.put_u32(seqid);
+        encode_stateid4(w, stateid.seqid, stateid.other);
+    }
+
+    fn read_stateid(&mut self, stateid: &StateId4, offset: u64, count: u32) {
         let w = self.push(OP_READ);
-        encode_stateid4(w, 0, [0u8; 12]);
+        encode_stateid4(w, stateid.seqid, stateid.other);
         w.put_u64(offset);
         w.put_u32(count);
     }
@@ -329,6 +500,8 @@ enum ResOp {
     Lookup(core::result::Result<(), u32>),
     GetFh(core::result::Result<Vec<u8>, u32>),
     PutFh(core::result::Result<(), u32>),
+    Open(core::result::Result<OpenOk, u32>),
+    Close(core::result::Result<StateId4, u32>),
     Read(core::result::Result<ReadOk, u32>),
     Unknown { op: u32, status: u32 },
 }
@@ -344,6 +517,8 @@ impl CompoundRes {
                 ResOp::Lookup(Err(st)) => (OP_LOOKUP, *st),
                 ResOp::GetFh(Err(st)) => (OP_GETFH, *st),
                 ResOp::PutFh(Err(st)) => (OP_PUTFH, *st),
+                ResOp::Open(Err(st)) => (OP_OPEN, *st),
+                ResOp::Close(Err(st)) => (OP_CLOSE, *st),
                 ResOp::Read(Err(st)) => (OP_READ, *st),
                 ResOp::Unknown { op, status } if *status != 0 => (*op, *status),
                 _ => continue,
@@ -428,6 +603,42 @@ impl CompoundRes {
         }))
     }
 
+    fn expect_open(&self) -> Result<core::result::Result<OpenOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::Open(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_OPEN),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_OPEN),
+        }))
+    }
+
+    fn expect_close(&self) -> Result<core::result::Result<StateId4, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::Close(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_CLOSE),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_CLOSE),
+        }))
+    }
+
     fn expect_read(&self) -> Result<core::result::Result<ReadOk, Nfs4Error>> {
         for op in &self.ops {
             if let ResOp::Read(r) = op {
@@ -476,18 +687,18 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
                 0 => {}
                 1 => {
                     // state_protect_ops4: enforce_mask bitmap4<>, allow_mask bitmap4<>
-                    let _enforce = r.get_vec(|r| Ok(r.get_u32()?))?;
-                    let _allow = r.get_vec(|r| Ok(r.get_u32()?))?;
+                    let _enforce = r.get_vec(|r| r.get_u32())?;
+                    let _allow = r.get_vec(|r| r.get_u32())?;
                 }
                 2 => {
                     // ssv_prot_info4 (skip)
-                    let _ops_enforce = r.get_vec(|r| Ok(r.get_u32()?))?;
-                    let _ops_allow = r.get_vec(|r| Ok(r.get_u32()?))?;
+                    let _ops_enforce = r.get_vec(|r| r.get_u32())?;
+                    let _ops_allow = r.get_vec(|r| r.get_u32())?;
                     let _hash_alg = r.get_u32()?;
                     let _encr_alg = r.get_u32()?;
                     let _ssv_len = r.get_u32()?;
                     let _window = r.get_u32()?;
-                    let _handles = r.get_vec(|r| Ok(r.get_opaque()?))?;
+                    let _handles = r.get_vec(|r| r.get_opaque())?;
                 }
                 other => return Ok(ResOp::Unknown { op, status: other }),
             }
@@ -574,6 +785,28 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
                 Ok(ResOp::PutFh(Ok(())))
             }
         }
+        OP_OPEN => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::Open(Err(st)));
+            }
+
+            let stateid = decode_stateid4(r)?;
+            skip_change_info4(r)?;
+            let rflags = r.get_u32()?;
+            let _attrset = r.get_vec(|r| r.get_u32())?;
+            skip_open_delegation4(r)?;
+
+            Ok(ResOp::Open(Ok(OpenOk { stateid, rflags })))
+        }
+        OP_CLOSE => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::Close(Err(st)));
+            }
+            let stateid = decode_stateid4(r)?;
+            Ok(ResOp::Close(Ok(stateid)))
+        }
         OP_READ => {
             let st = r.get_u32()?;
             if st != 0 {
@@ -591,6 +824,88 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
                 status: st,
             })
         }
+    }
+}
+
+fn decode_stateid4(r: &mut XdrReader<'_>) -> Result<StateId4> {
+    let seqid = r.get_u32()?;
+    let other_v = r.get_opaque_fixed(12)?;
+    let other: [u8; 12] = other_v.as_slice().try_into().unwrap();
+    Ok(StateId4 { seqid, other })
+}
+
+fn skip_change_info4(r: &mut XdrReader<'_>) -> Result<()> {
+    let _atomic = r.get_bool()?;
+    let _before = r.get_u64()?;
+    let _after = r.get_u64()?;
+    Ok(())
+}
+
+fn skip_nfsace4(r: &mut XdrReader<'_>) -> Result<()> {
+    let _type_ = r.get_u32()?;
+    let _flag = r.get_u32()?;
+    let _mask = r.get_u32()?;
+    let _who = r.get_string()?;
+    Ok(())
+}
+
+fn skip_nfs_space_limit4(r: &mut XdrReader<'_>) -> Result<()> {
+    let limitby = r.get_u32()?;
+    match limitby {
+        1 => {
+            // NFS_LIMIT_SIZE
+            let _filesize = r.get_u64()?;
+        }
+        2 => {
+            // NFS_LIMIT_BLOCKS
+            let _num_blocks = r.get_u32()?;
+            let _bytes_per_block = r.get_u32()?;
+        }
+        other => {
+            return Err(crate::rpc::RpcError::RpcDenied(format!(
+                "unknown nfs_space_limit4 discriminant {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn skip_open_delegation4(r: &mut XdrReader<'_>) -> Result<()> {
+    let deleg_type = r.get_u32()?;
+    match deleg_type {
+        0 => Ok(()),
+        1 => {
+            // OPEN_DELEGATE_READ
+            let _stateid = decode_stateid4(r)?;
+            let _recall = r.get_bool()?;
+            skip_nfsace4(r)
+        }
+        2 => {
+            // OPEN_DELEGATE_WRITE
+            let _stateid = decode_stateid4(r)?;
+            let _recall = r.get_bool()?;
+            skip_nfs_space_limit4(r)?;
+            skip_nfsace4(r)
+        }
+        3 => {
+            // OPEN_DELEGATE_NONE_EXT
+            let why = r.get_u32()?;
+            match why {
+                1 => {
+                    // WND4_CONTENTION
+                    let _push = r.get_bool()?;
+                }
+                2 => {
+                    // WND4_RESOURCE
+                    let _signal = r.get_bool()?;
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        other => Err(crate::rpc::RpcError::RpcDenied(format!(
+            "unknown open_delegation_type4 {other}"
+        ))),
     }
 }
 

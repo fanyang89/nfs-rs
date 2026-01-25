@@ -83,7 +83,7 @@ pub fn getattr(
         NFS_VERS,
         NFSPROC_GETATTR,
         |w| w.put_opaque(&fh.0),
-        |r| decode_getattr_res(r),
+        decode_getattr_res,
     )
 }
 
@@ -100,7 +100,7 @@ pub fn lookup(
             w.put_opaque(&dir.0);
             w.put_string(name);
         },
-        |r| decode_lookup_res(r),
+        decode_lookup_res,
     )
 }
 
@@ -119,7 +119,7 @@ pub fn read(
             w.put_u64(offset);
             w.put_u32(count);
         },
-        |r| decode_read_res(r),
+        decode_read_res,
     )
 }
 
@@ -142,7 +142,7 @@ pub fn readdirplus(
             w.put_u32(dircount);
             w.put_u32(maxcount);
         },
-        |r| decode_readdirplus_res(r),
+        decode_readdirplus_res,
     )
 }
 

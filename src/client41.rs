@@ -7,6 +7,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug)]
 pub struct Nfs41Client {
     pub rpc: TcpRpcClient,
+    clientid: u64,
+    open_owner: Vec<u8>,
+    open_seqid: u32,
+    close_seqid: u32,
     sessionid: [u8; 16],
     slotid: u32,
     seq: u32,
@@ -31,6 +35,10 @@ impl Nfs41Client {
 
         Ok(Self {
             rpc,
+            clientid: exok.clientid,
+            open_owner: owner.ownerid,
+            open_seqid: 1,
+            close_seqid: 1,
             sessionid: csok.sessionid,
             slotid: 0,
             seq: csok.sequenceid,
@@ -62,22 +70,44 @@ impl Nfs41Client {
         path: &str,
         chunk_size: u32,
     ) -> Result<core::result::Result<Vec<u8>, Nfs4Error>> {
-        let fh = match self.lookup_fh(path)? {
+        let (dir_path, name) = split_parent(path)?;
+
+        let (seqok, open_ok, fh) = match nfs4::compound_with_session_open_getfh(
+            &mut self.rpc,
+            nfs4::SessionArgs {
+                sessionid: self.sessionid,
+                seq: self.seq,
+                slot: self.slotid,
+            },
+            nfs4::OpenOwner {
+                clientid: self.clientid,
+                owner: &self.open_owner,
+                seqid: self.open_seqid,
+            },
+            nfs4::OpenPath { dir_path, name },
+        )? {
             Ok(v) => v,
             Err(e) => return Ok(Err(e)),
         };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        self.open_seqid = self.open_seqid.wrapping_add(1);
 
         let mut out = Vec::new();
         let mut offset = 0u64;
         loop {
-            let (seqok, r) = match nfs4::compound_with_session_putfh_read(
+            let (seqok, r) = match nfs4::compound_with_session_putfh_read_stateid(
                 &mut self.rpc,
-                self.sessionid,
-                self.seq,
-                self.slotid,
-                &fh,
-                offset,
-                chunk_size,
+                nfs4::SessionArgs {
+                    sessionid: self.sessionid,
+                    seq: self.seq,
+                    slot: self.slotid,
+                },
+                nfs4::ReadArgs {
+                    fh: &fh,
+                    stateid: &open_ok.stateid,
+                    offset,
+                    count: chunk_size,
+                },
             )? {
                 Ok(v) => v,
                 Err(e) => return Ok(Err(e)),
@@ -92,7 +122,35 @@ impl Nfs41Client {
                 break;
             }
         }
+
+        let seqok = match nfs4::compound_with_session_putfh_close(
+            &mut self.rpc,
+            self.sessionid,
+            self.seq,
+            self.slotid,
+            &fh,
+            self.close_seqid,
+            &open_ok.stateid,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        self.close_seqid = self.close_seqid.wrapping_add(1);
+
         Ok(Ok(out))
+    }
+}
+
+fn split_parent(path: &str) -> Result<(&str, &str)> {
+    let p = path.trim_matches('/');
+    if p.is_empty() {
+        return Err(RpcError::RpcDenied("path is empty".into()));
+    }
+    match p.rsplit_once('/') {
+        Some((dir, name)) if !name.is_empty() => Ok((dir, name)),
+        None => Ok(("", p)),
+        _ => Err(RpcError::RpcDenied("invalid path".into())),
     }
 }
 
