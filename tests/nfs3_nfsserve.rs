@@ -48,6 +48,7 @@ enum NodeKind {
     Dir(BTreeMap<Vec<u8>, u64>),
     File(Vec<u8>),
     Symlink(Vec<u8>),
+    #[allow(dead_code)]
     Special(nfsserve::nfs::ftype3),
 }
 

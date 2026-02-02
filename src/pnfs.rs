@@ -28,8 +28,12 @@ pub struct FlexFilesClient {
 
 impl FlexFilesClient {
     pub fn connect(server: &str) -> Result<Self> {
+        Self::connect_with_port(server, 2049)
+    }
+
+    pub fn connect_with_port(server: &str, port: u16) -> Result<Self> {
         Ok(Self {
-            mds: Nfs41Client::connect(server)?,
+            mds: Nfs41Client::connect_with_port(server, port)?,
             device_cache: HashMap::new(),
             ds_pool: HashMap::new(),
             auth_machine: "nfs-rs".to_string(),
@@ -57,18 +61,18 @@ impl FlexFilesClient {
             Err(e) => return Err(map_nfs4_err(e)),
         };
 
-        let mut layout = match self.mds.layoutget(
-            &fh,
-            &open_ok.stateid,
-            LAYOUTIOMODE4_READ,
-            0,
-            u64::MAX,
-            0,
-            1,
-        )? {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        };
+        let mut layout = self
+            .mds
+            .layoutget(
+                &fh,
+                &open_ok.stateid,
+                LAYOUTIOMODE4_READ,
+                0,
+                u64::MAX,
+                0,
+                1,
+            )?
+            .ok();
         if let Some(l) = layout.as_ref() {
             self.register_layout(&fh, LAYOUTIOMODE4_READ, &l.stateid);
         }
@@ -125,14 +129,10 @@ impl FlexFilesClient {
             Err(e) => return Err(map_nfs4_err(e)),
         };
 
-        let mut layout =
-            match self
-                .mds
-                .layoutget(&fh, &open_ok.stateid, LAYOUTIOMODE4_RW, 0, u64::MAX, 0, 1)?
-            {
-                Ok(v) => Some(v),
-                Err(_) => None,
-            };
+        let mut layout = self
+            .mds
+            .layoutget(&fh, &open_ok.stateid, LAYOUTIOMODE4_RW, 0, u64::MAX, 0, 1)?
+            .ok();
         if let Some(l) = layout.as_ref() {
             self.register_layout(&fh, LAYOUTIOMODE4_RW, &l.stateid);
         }
@@ -150,7 +150,7 @@ impl FlexFilesClient {
             layout_flags = flexfiles_flags(l).unwrap_or(0);
         }
 
-        if let Some(l) = layout.as_ref() {
+        if layout.is_some() {
             while (offset as usize) < data.len() {
                 self.apply_layout_recalls(&mut layout)?;
                 let l = match layout.as_ref() {
@@ -163,7 +163,7 @@ impl FlexFilesClient {
                 };
                 let end = (offset as usize + chunk_size as usize).min(data.len());
                 let chunk = &data[offset as usize..end];
-                if let Err(_) = self.write_ds_chunk(l, offset, chunk) {
+                if self.write_ds_chunk(l, offset, chunk).is_err() {
                     let _ = self
                         .mds
                         .layoutreturn(&fh, LAYOUTIOMODE4_RW, 0, u64::MAX, &l.stateid);
@@ -242,7 +242,7 @@ impl FlexFilesClient {
                 "flexfiles DS is not NFSv3".into(),
             ));
         }
-        let ds = self.ds_rpc(addr, &dss)?;
+        let ds = self.ds_rpc(addr, dss)?;
         let fh = ds_filehandle(dss)?;
         let res = nfs3::read(ds, &fh, offset, count)?;
         res.map_err(map_nfs3_err)
@@ -305,7 +305,7 @@ impl FlexFilesClient {
         let addr = dev
             .netaddrs
             .iter()
-            .find_map(|a| parse_netaddr(a))
+            .find_map(parse_netaddr)
             .ok_or_else(|| RpcError::RpcAcceptedError("no usable netaddr".into()))?;
         let version = dev
             .versions
@@ -317,9 +317,9 @@ impl FlexFilesClient {
     }
 
     fn ds_rpc(&mut self, addr: SocketAddr, dss: &FfDataServer4) -> Result<&mut TcpRpcClient> {
-        if !self.ds_pool.contains_key(&addr) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.ds_pool.entry(addr) {
             let rpc = TcpRpcClient::connect(&addr.to_string())?;
-            self.ds_pool.insert(addr, rpc);
+            entry.insert(rpc);
         }
         let rpc = self.ds_pool.get_mut(&addr).unwrap();
         let cred = auth_from_ffds(
@@ -347,10 +347,11 @@ impl FlexFilesClient {
 
     fn apply_layout_recalls(&mut self, layout: &mut Option<LayoutGetOk>) -> Result<()> {
         let returned = self.handle_layout_recalls()?;
-        if let Some(l) = layout.as_ref() {
-            if returned.contains(&l.stateid) {
-                *layout = None;
-            }
+        if layout
+            .as_ref()
+            .is_some_and(|l| returned.contains(&l.stateid))
+        {
+            *layout = None;
         }
         Ok(())
     }
@@ -512,7 +513,7 @@ fn select_mirror_and_ds(
     let mirror = flex
         .mirrors
         .iter()
-        .max_by_key(|m| mirror_efficiency(*m))
+        .max_by_key(|m| mirror_efficiency(m))
         .ok_or_else(|| RpcError::RpcAcceptedError("no mirrors".into()))?;
     let dss_id = calc_dss_id(flex.stripe_unit, mirror.data_servers.len(), offset);
     let dss = mirror
@@ -522,7 +523,7 @@ fn select_mirror_and_ds(
     Ok((mirror, dss))
 }
 
-fn select_write_mirrors<'a>(layout: &'a FfLayout4, flags: u32) -> Vec<&'a FfMirror4> {
+fn select_write_mirrors(layout: &FfLayout4, flags: u32) -> Vec<&FfMirror4> {
     if layout.mirrors.is_empty() {
         return Vec::new();
     }
@@ -547,7 +548,7 @@ fn mirror_efficiency(mirror: &FfMirror4) -> u32 {
 fn ds_filehandle(dss: &FfDataServer4) -> Result<FileHandle> {
     let fh = dss
         .fh_list
-        .get(0)
+        .first()
         .ok_or_else(|| RpcError::RpcAcceptedError("missing DS filehandle".into()))?;
     Ok(FileHandle(fh.clone()))
 }

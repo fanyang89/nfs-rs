@@ -19,7 +19,6 @@ pub struct Nfs41Client {
     sessionid: [u8; 16],
     slotid: u32,
     seq: u32,
-    cb_program: u32,
     cb_state: Arc<Mutex<CallbackState>>,
     auth_machine: String,
     default_uid: u32,
@@ -83,7 +82,6 @@ impl Nfs41Client {
             sessionid: csok.sessionid,
             slotid: 0,
             seq: csok.sequenceid,
-            cb_program,
             cb_state,
             auth_machine,
             default_uid,
@@ -349,6 +347,7 @@ impl Nfs41Client {
         Ok(Ok(()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn layoutget(
         &mut self,
         fh: &[u8],
