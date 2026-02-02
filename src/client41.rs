@@ -1,4 +1,4 @@
-//! High-level NFSv4.1 client (basic read/write + metadata).
+//! High-level NFSv4.1 client (basic read/write + metadata + create/rename/remove).
 
 use crate::nfs4::{self, Nfs4Error};
 use crate::rpc::{
@@ -32,6 +32,32 @@ impl Nfs41Client {
     }
 
     pub fn connect_with_port(server: &str, port: u16) -> Result<Self> {
+        Self::connect_with_port_flags(
+            server,
+            port,
+            nfs4::EXCHGID4_FLAG_USE_PNFS_MDS | nfs4::EXCHGID4_FLAG_USE_NON_PNFS,
+            nfs4::NFS4_CALLBACK_PROG,
+            true,
+        )
+    }
+
+    pub fn connect_ds(server: &str, port: u16) -> Result<Self> {
+        Self::connect_with_port_flags(
+            server,
+            port,
+            nfs4::EXCHGID4_FLAG_USE_PNFS_DS,
+            0,
+            false,
+        )
+    }
+
+    pub fn connect_with_port_flags(
+        server: &str,
+        port: u16,
+        exchg_flags: u32,
+        cb_program: u32,
+        enable_callbacks: bool,
+    ) -> Result<Self> {
         let mut rpc = TcpRpcClient::connect(&format!("{server}:{port}"))?;
         let auth_machine = "nfs-rs".to_string();
         let default_uid = 1000;
@@ -48,30 +74,35 @@ impl Nfs41Client {
         let ex = nfs4::exchange_id(
             &mut rpc,
             &owner,
-            nfs4::EXCHGID4_FLAG_USE_PNFS_MDS | nfs4::EXCHGID4_FLAG_USE_NON_PNFS,
+            exchg_flags,
         )?;
         let exok = ex.map_err(|e| RpcError::RpcAcceptedError(e.to_string()))?;
 
-        let cb_program = nfs4::NFS4_CALLBACK_PROG;
-        let cb_auth = nfs4::AuthSysParams {
-            machine: &auth_machine,
-            uid: default_uid,
-            gid: default_gid,
-            groups: &default_groups,
+        let cb_auth = if enable_callbacks {
+            Some(nfs4::AuthSysParams {
+                machine: &auth_machine,
+                uid: default_uid,
+                gid: default_gid,
+                groups: &default_groups,
+            })
+        } else {
+            None
         };
         let cs = nfs4::create_session(
             &mut rpc,
             exok.clientid,
             exok.sequenceid,
             cb_program,
-            Some(cb_auth),
+            cb_auth,
         )?;
         let csok = cs.map_err(|e| RpcError::RpcAcceptedError(e.to_string()))?;
         let cb_state = Arc::new(Mutex::new(CallbackState::new(csok.sessionid)));
-        rpc.set_callback_handler(Box::new(Nfs4CallbackHandler {
-            cb_program,
-            state: cb_state.clone(),
-        }));
+        if enable_callbacks && cb_program != 0 {
+            rpc.set_callback_handler(Box::new(Nfs4CallbackHandler {
+                cb_program,
+                state: cb_state.clone(),
+            }));
+        }
 
         Ok(Self {
             rpc,
@@ -218,6 +249,165 @@ impl Nfs41Client {
         Ok(Ok(rok))
     }
 
+    pub fn mkdir(
+        &mut self,
+        path: &str,
+        attrs: &nfs4::SetAttr4,
+    ) -> Result<core::result::Result<Vec<u8>, Nfs4Error>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir_fh = match self.lookup_fh(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let sess = self.session_args();
+        let (seqok, _cok, fh) = match nfs4::compound_with_session_putfh_create_dir_getfh(
+            &mut self.rpc,
+            sess,
+            &dir_fh,
+            name,
+            attrs,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        Ok(Ok(fh))
+    }
+
+    pub fn symlink(
+        &mut self,
+        path: &str,
+        target: &str,
+        attrs: &nfs4::SetAttr4,
+    ) -> Result<core::result::Result<Vec<u8>, Nfs4Error>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir_fh = match self.lookup_fh(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let sess = self.session_args();
+        let (seqok, _cok, fh) = match nfs4::compound_with_session_putfh_create_symlink_getfh(
+            &mut self.rpc,
+            sess,
+            &dir_fh,
+            name,
+            target,
+            attrs,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        Ok(Ok(fh))
+    }
+
+    pub fn remove(&mut self, path: &str) -> Result<core::result::Result<nfs4::RemoveOk, Nfs4Error>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir_fh = match self.lookup_fh(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let sess = self.session_args();
+        let (seqok, rok) = match nfs4::compound_with_session_putfh_remove(
+            &mut self.rpc,
+            sess,
+            &dir_fh,
+            name,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        Ok(Ok(rok))
+    }
+
+    pub fn rmdir(&mut self, path: &str) -> Result<core::result::Result<nfs4::RemoveOk, Nfs4Error>> {
+        self.remove(path)
+    }
+
+    pub fn rename(
+        &mut self,
+        from: &str,
+        to: &str,
+    ) -> Result<core::result::Result<nfs4::RenameOk, Nfs4Error>> {
+        let (from_dir_path, from_name) = split_parent(from)?;
+        let (to_dir_path, to_name) = split_parent(to)?;
+        let from_dir_fh = match self.lookup_fh(from_dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let to_dir_fh = match self.lookup_fh(to_dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let sess = self.session_args();
+        let (seqok, rok) = match nfs4::compound_with_session_putfh_rename(
+            &mut self.rpc,
+            sess,
+            &from_dir_fh,
+            from_name,
+            &to_dir_fh,
+            to_name,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        Ok(Ok(rok))
+    }
+
+    pub fn link(
+        &mut self,
+        source: &str,
+        dest: &str,
+    ) -> Result<core::result::Result<nfs4::LinkOk, Nfs4Error>> {
+        let source_fh = match self.lookup_fh(source)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let (dir_path, name) = split_parent(dest)?;
+        let dir_fh = match self.lookup_fh(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let sess = self.session_args();
+        let (seqok, lok) = match nfs4::compound_with_session_putfh_link(
+            &mut self.rpc,
+            sess,
+            &source_fh,
+            &dir_fh,
+            name,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        Ok(Ok(lok))
+    }
+
+    pub fn secinfo(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs4::SecInfoOk, Nfs4Error>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir_fh = match self.lookup_fh(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let sess = self.session_args();
+        let (seqok, sok) = match nfs4::compound_with_session_putfh_secinfo(
+            &mut self.rpc,
+            sess,
+            &dir_fh,
+            name,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        Ok(Ok(sok))
+    }
+
     pub fn setattr(
         &mut self,
         fh: &[u8],
@@ -245,6 +435,36 @@ impl Nfs41Client {
         };
         self.seq = seqok.sequenceid.wrapping_add(1);
         Ok(Ok(sok))
+    }
+
+    pub fn open_create_getfh_access(
+        &mut self,
+        path: &str,
+        access: u32,
+        guarded: bool,
+        attrs: &nfs4::SetAttr4,
+    ) -> Result<core::result::Result<nfs4::OpenGetFhOk, Nfs4Error>> {
+        let (dir_path, name) = split_parent(path)?;
+        let sess = self.session_args();
+        let (seqok, open_ok, fh) = match nfs4::compound_with_session_open_create_getfh_access(
+            &mut self.rpc,
+            sess,
+            nfs4::OpenOwner {
+                clientid: self.clientid,
+                owner: &self.open_owner,
+                seqid: self.open_seqid,
+            },
+            nfs4::OpenPath { dir_path, name },
+            access,
+            guarded,
+            attrs,
+        )? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.seq = seqok.sequenceid.wrapping_add(1);
+        self.open_seqid = self.open_seqid.wrapping_add(1);
+        Ok(Ok((seqok, open_ok, fh)))
     }
 
     pub fn open_getfh_access(

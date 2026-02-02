@@ -23,8 +23,10 @@ pub const NFSCBPROC_CB_COMPOUND: u32 = 1;
 // NFS operation numbers (subset)
 pub const OP_ACCESS: u32 = 3;
 pub const OP_CLOSE: u32 = 4;
+pub const OP_CREATE: u32 = 6;
 pub const OP_GETATTR: u32 = 9;
 pub const OP_GETFH: u32 = 10;
+pub const OP_LINK: u32 = 11;
 pub const OP_LOOKUP: u32 = 15;
 pub const OP_OPEN: u32 = 18;
 pub const OP_PUTFH: u32 = 22;
@@ -32,6 +34,10 @@ pub const OP_PUTROOTFH: u32 = 24;
 pub const OP_READ: u32 = 25;
 pub const OP_READDIR: u32 = 26;
 pub const OP_READLINK: u32 = 27;
+pub const OP_REMOVE: u32 = 28;
+pub const OP_RENAME: u32 = 29;
+pub const OP_SAVEFH: u32 = 32;
+pub const OP_SECINFO: u32 = 33;
 pub const OP_SETATTR: u32 = 34;
 pub const OP_WRITE: u32 = 38;
 
@@ -52,6 +58,16 @@ pub const OPEN4_SHARE_ACCESS_READ: u32 = 0x0000_0001;
 pub const OPEN4_SHARE_ACCESS_WRITE: u32 = 0x0000_0002;
 pub const OPEN4_SHARE_DENY_NONE: u32 = 0x0000_0000;
 pub const OPEN4_SHARE_ACCESS_WANT_NO_DELEG: u32 = 0x0000_0400;
+
+pub const OPEN4_NOCREATE: u32 = 0;
+pub const OPEN4_CREATE: u32 = 1;
+
+pub const UNCHECKED4: u32 = 0;
+pub const GUARDED4: u32 = 1;
+
+pub const NF4REG: u32 = 1;
+pub const NF4DIR: u32 = 2;
+pub const NF4LNK: u32 = 5;
 
 // ACCESS bits (subset)
 pub const ACCESS4_READ: u32 = 0x0000_0001;
@@ -86,15 +102,17 @@ pub const STABLE_HOW_UNSTABLE4: u32 = 0;
 pub const STABLE_HOW_DATA_SYNC4: u32 = 1;
 pub const STABLE_HOW_FILE_SYNC4: u32 = 2;
 
+pub const RPCSEC_GSS: u32 = 6;
+
 // FATTR4 (subset)
 pub const FATTR4_TYPE: u32 = 1;
 pub const FATTR4_SIZE: u32 = 4;
-pub const FATTR4_FILEID: u32 = 13;
-pub const FATTR4_MODE: u32 = 20;
-pub const FATTR4_OWNER: u32 = 23;
-pub const FATTR4_OWNER_GROUP: u32 = 24;
-pub const FATTR4_TIME_ACCESS: u32 = 34;
-pub const FATTR4_TIME_MODIFY: u32 = 40;
+pub const FATTR4_FILEID: u32 = 20;
+pub const FATTR4_MODE: u32 = 33;
+pub const FATTR4_OWNER: u32 = 36;
+pub const FATTR4_OWNER_GROUP: u32 = 37;
+pub const FATTR4_TIME_ACCESS: u32 = 47;
+pub const FATTR4_TIME_MODIFY: u32 = 53;
 
 pub const ATTR_BASIC: [u32; 6] = [
     FATTR4_TYPE,
@@ -346,6 +364,35 @@ pub struct WriteOk {
     pub verifier: [u8; 8],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeInfo4 {
+    pub atomic: bool,
+    pub before: u64,
+    pub after: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateOk {
+    pub cinfo: ChangeInfo4,
+    pub attrset: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkOk {
+    pub cinfo: ChangeInfo4,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveOk {
+    pub cinfo: ChangeInfo4,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameOk {
+    pub source_cinfo: ChangeInfo4,
+    pub target_cinfo: ChangeInfo4,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileAttr4 {
     pub type_: Option<u32>,
@@ -395,6 +442,26 @@ pub struct SetAttrOk {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcSecGssInfo {
+    pub oid: Vec<u8>,
+    pub qop: u32,
+    pub service: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecInfoFlavor {
+    AuthNone,
+    AuthSys,
+    RpcsecGss(RpcSecGssInfo),
+    Other(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecInfoOk {
+    pub flavors: Vec<SecInfoFlavor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenOk {
     pub stateid: StateId4,
     pub rflags: u32,
@@ -404,6 +471,7 @@ pub type Nfs4Res<T> = core::result::Result<T, Nfs4Error>;
 pub type Nfs4Call<T> = Result<Nfs4Res<T>>;
 
 pub type OpenGetFhOk = (SequenceOk, OpenOk, Vec<u8>);
+pub type CreateGetFhOk = (SequenceOk, CreateOk, Vec<u8>);
 pub type ReadCallOk = (SequenceOk, ReadOk);
 
 #[derive(Debug, Clone, Copy)]
@@ -634,6 +702,54 @@ pub fn compound_with_session_open_getfh_access(
     )
 }
 
+pub fn compound_with_session_open_create_getfh_access(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    open: OpenOwner<'_>,
+    path: OpenPath<'_>,
+    access: u32,
+    guarded: bool,
+    attrs: &SetAttr4,
+) -> Nfs4Call<OpenGetFhOk> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "opencreate",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putrootfh();
+            for comp in path.dir_path.split('/').filter(|s| !s.is_empty()) {
+                ops.lookup(comp);
+            }
+            ops.open_claim_null_create(
+                open.clientid,
+                open.owner,
+                open.seqid,
+                path.name,
+                access,
+                guarded,
+                attrs,
+            );
+            ops.getfh();
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let opok = res.expect_open()?;
+            let fh = res.expect_getfh()?;
+            Ok(match (seqok, opok, fh) {
+                (Ok(s), Ok(o), Ok(fh)) => Ok((s, o, fh)),
+                (Err(e), _, _) => Err(e),
+                (_, Err(e), _) => Err(e),
+                (_, _, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
 pub fn compound_with_session_putfh_close(
     rpc: &mut TcpRpcClient,
     sessionid: [u8; 16],
@@ -722,6 +838,208 @@ pub fn compound_with_session_putfh_getattr(
             let gok = res.expect_getattr()?;
             Ok(match (seqok, gok) {
                 (Ok(s), Ok(g)) => Ok((s, g)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_create_dir_getfh(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    dir_fh: &[u8],
+    name: &str,
+    attrs: &SetAttr4,
+) -> Result<core::result::Result<CreateGetFhOk, Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "createdir",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(dir_fh);
+            ops.create_dir(name, attrs);
+            ops.getfh();
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let cok = res.expect_create()?;
+            let fh = res.expect_getfh()?;
+            Ok(match (seqok, cok, fh) {
+                (Ok(s), Ok(c), Ok(fh)) => Ok((s, c, fh)),
+                (Err(e), _, _) => Err(e),
+                (_, Err(e), _) => Err(e),
+                (_, _, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_create_symlink_getfh(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    dir_fh: &[u8],
+    name: &str,
+    target: &str,
+    attrs: &SetAttr4,
+) -> Result<core::result::Result<CreateGetFhOk, Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "createsym",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(dir_fh);
+            ops.create_symlink(name, target, attrs);
+            ops.getfh();
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let cok = res.expect_create()?;
+            let fh = res.expect_getfh()?;
+            Ok(match (seqok, cok, fh) {
+                (Ok(s), Ok(c), Ok(fh)) => Ok((s, c, fh)),
+                (Err(e), _, _) => Err(e),
+                (_, Err(e), _) => Err(e),
+                (_, _, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_remove(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    dir_fh: &[u8],
+    name: &str,
+) -> Result<core::result::Result<(SequenceOk, RemoveOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "remove",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(dir_fh);
+            ops.remove(name);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let rok = res.expect_remove()?;
+            Ok(match (seqok, rok) {
+                (Ok(s), Ok(rk)) => Ok((s, rk)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_link(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    source_fh: &[u8],
+    target_dir_fh: &[u8],
+    name: &str,
+) -> Result<core::result::Result<(SequenceOk, LinkOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "link",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(source_fh);
+            ops.savefh();
+            ops.putfh(target_dir_fh);
+            ops.link(name);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let lok = res.expect_link()?;
+            Ok(match (seqok, lok) {
+                (Ok(s), Ok(lk)) => Ok((s, lk)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_rename(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    source_dir_fh: &[u8],
+    oldname: &str,
+    target_dir_fh: &[u8],
+    newname: &str,
+) -> Result<core::result::Result<(SequenceOk, RenameOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "rename",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(source_dir_fh);
+            ops.savefh();
+            ops.putfh(target_dir_fh);
+            ops.rename(oldname, newname);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let rok = res.expect_rename()?;
+            Ok(match (seqok, rok) {
+                (Ok(s), Ok(rk)) => Ok((s, rk)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            })
+        },
+    )
+}
+
+pub fn compound_with_session_putfh_secinfo(
+    rpc: &mut TcpRpcClient,
+    sess: SessionArgs,
+    dir_fh: &[u8],
+    name: &str,
+) -> Result<core::result::Result<(SequenceOk, SecInfoOk), Nfs4Error>> {
+    compound(
+        rpc,
+        NFS4_MIN_VERSION_1,
+        "secinfo",
+        |ops| {
+            ops.sequence(sess.sessionid, sess.seq, sess.slot);
+            ops.putfh(dir_fh);
+            ops.secinfo(name);
+        },
+        |r| {
+            let res = decode_compound_res(r)?;
+            if let Some(e) = res.first_error() {
+                return Ok(Err(e));
+            }
+            let seqok = res.expect_sequence()?;
+            let sok = res.expect_secinfo()?;
+            Ok(match (seqok, sok) {
+                (Ok(s), Ok(v)) => Ok((s, v)),
                 (Err(e), _) => Err(e),
                 (_, Err(e)) => Err(e),
             })
@@ -1173,7 +1491,40 @@ impl OpsWriter {
         w.put_opaque(owner);
 
         // openflag4: OPEN4_NOCREATE
+        w.put_u32(OPEN4_NOCREATE);
+
+        // open_claim4: CLAIM_NULL + component4 name
         w.put_u32(0);
+        w.put_string(name);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_claim_null_create(
+        &mut self,
+        clientid: u64,
+        owner: &[u8],
+        seqid: u32,
+        name: &str,
+        access: u32,
+        guarded: bool,
+        attrs: &SetAttr4,
+    ) {
+        let w = self.push(OP_OPEN);
+        w.put_u32(seqid);
+        w.put_u32(access);
+        w.put_u32(OPEN4_SHARE_DENY_NONE);
+
+        w.put_u64(clientid);
+        w.put_opaque(owner);
+
+        // openflag4: OPEN4_CREATE + createhow4
+        w.put_u32(OPEN4_CREATE);
+        if guarded {
+            w.put_u32(GUARDED4);
+        } else {
+            w.put_u32(UNCHECKED4);
+        }
+        encode_setattr4(w, attrs);
 
         // open_claim4: CLAIM_NULL + component4 name
         w.put_u32(0);
@@ -1201,6 +1552,10 @@ impl OpsWriter {
         w.put_opaque(data);
     }
 
+    fn savefh(&mut self) {
+        let _ = self.push(OP_SAVEFH);
+    }
+
     fn readlink(&mut self) {
         let _ = self.push(OP_READLINK);
     }
@@ -1218,6 +1573,42 @@ impl OpsWriter {
         let w = self.push(OP_SETATTR);
         encode_stateid4(w, stateid.seqid, stateid.other);
         encode_setattr4(w, attrs);
+    }
+
+    fn create_dir(&mut self, name: &str, attrs: &SetAttr4) {
+        let w = self.push(OP_CREATE);
+        w.put_u32(NF4DIR);
+        w.put_string(name);
+        encode_setattr4(w, attrs);
+    }
+
+    fn create_symlink(&mut self, name: &str, target: &str, attrs: &SetAttr4) {
+        let w = self.push(OP_CREATE);
+        w.put_u32(NF4LNK);
+        w.put_string(target);
+        w.put_string(name);
+        encode_setattr4(w, attrs);
+    }
+
+    fn remove(&mut self, name: &str) {
+        let w = self.push(OP_REMOVE);
+        w.put_string(name);
+    }
+
+    fn rename(&mut self, oldname: &str, newname: &str) {
+        let w = self.push(OP_RENAME);
+        w.put_string(oldname);
+        w.put_string(newname);
+    }
+
+    fn link(&mut self, newname: &str) {
+        let w = self.push(OP_LINK);
+        w.put_string(newname);
+    }
+
+    fn secinfo(&mut self, name: &str) {
+        let w = self.push(OP_SECINFO);
+        w.put_string(name);
     }
 
     fn getdeviceinfo(
@@ -1364,11 +1755,17 @@ enum ResOp {
     GetAttr(core::result::Result<GetAttrOk, u32>),
     GetFh(core::result::Result<Vec<u8>, u32>),
     PutFh(core::result::Result<(), u32>),
+    SaveFh(core::result::Result<(), u32>),
     Open(core::result::Result<OpenOk, u32>),
     Close(core::result::Result<StateId4, u32>),
     Read(core::result::Result<ReadOk, u32>),
     ReadDir(core::result::Result<ReadDirOk, u32>),
     ReadLink(core::result::Result<ReadLinkOk, u32>),
+    Create(core::result::Result<CreateOk, u32>),
+    Link(core::result::Result<LinkOk, u32>),
+    Remove(core::result::Result<RemoveOk, u32>),
+    Rename(core::result::Result<RenameOk, u32>),
+    SecInfo(core::result::Result<SecInfoOk, u32>),
     SetAttr(core::result::Result<SetAttrOk, u32>),
     Write(core::result::Result<WriteOk, u32>),
     LayoutGet(core::result::Result<LayoutGetOk, u32>),
@@ -1391,11 +1788,17 @@ impl CompoundRes {
                 ResOp::GetAttr(Err(st)) => (OP_GETATTR, *st),
                 ResOp::GetFh(Err(st)) => (OP_GETFH, *st),
                 ResOp::PutFh(Err(st)) => (OP_PUTFH, *st),
+                ResOp::SaveFh(Err(st)) => (OP_SAVEFH, *st),
                 ResOp::Open(Err(st)) => (OP_OPEN, *st),
                 ResOp::Close(Err(st)) => (OP_CLOSE, *st),
                 ResOp::Read(Err(st)) => (OP_READ, *st),
                 ResOp::ReadDir(Err(st)) => (OP_READDIR, *st),
                 ResOp::ReadLink(Err(st)) => (OP_READLINK, *st),
+                ResOp::Create(Err(st)) => (OP_CREATE, *st),
+                ResOp::Link(Err(st)) => (OP_LINK, *st),
+                ResOp::Remove(Err(st)) => (OP_REMOVE, *st),
+                ResOp::Rename(Err(st)) => (OP_RENAME, *st),
+                ResOp::SecInfo(Err(st)) => (OP_SECINFO, *st),
                 ResOp::SetAttr(Err(st)) => (OP_SETATTR, *st),
                 ResOp::Write(Err(st)) => (OP_WRITE, *st),
                 ResOp::LayoutGet(Err(st)) => (OP_LAYOUTGET, *st),
@@ -1608,6 +2011,96 @@ impl CompoundRes {
         Ok(Err(Nfs4Error {
             status: self.status,
             op: Some(OP_READLINK),
+        }))
+    }
+
+    fn expect_create(&self) -> Result<core::result::Result<CreateOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::Create(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_CREATE),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_CREATE),
+        }))
+    }
+
+    fn expect_link(&self) -> Result<core::result::Result<LinkOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::Link(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_LINK),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_LINK),
+        }))
+    }
+
+    fn expect_remove(&self) -> Result<core::result::Result<RemoveOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::Remove(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_REMOVE),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_REMOVE),
+        }))
+    }
+
+    fn expect_rename(&self) -> Result<core::result::Result<RenameOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::Rename(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_RENAME),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_RENAME),
+        }))
+    }
+
+    fn expect_secinfo(&self) -> Result<core::result::Result<SecInfoOk, Nfs4Error>> {
+        for op in &self.ops {
+            if let ResOp::SecInfo(r) = op {
+                return Ok(match r {
+                    Ok(v) => Ok(v.clone()),
+                    Err(st) => Err(Nfs4Error {
+                        status: *st,
+                        op: Some(OP_SECINFO),
+                    }),
+                });
+            }
+        }
+        Ok(Err(Nfs4Error {
+            status: self.status,
+            op: Some(OP_SECINFO),
         }))
     }
 
@@ -1831,6 +2324,15 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
                 Ok(ResOp::Lookup(Ok(())))
             }
         }
+        OP_CREATE => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::Create(Err(st)));
+            }
+            let cinfo = decode_change_info4(r)?;
+            let attrset = r.get_vec(|r| r.get_u32())?;
+            Ok(ResOp::Create(Ok(CreateOk { cinfo, attrset })))
+        }
         OP_ACCESS => {
             let st = r.get_u32()?;
             if st != 0 {
@@ -1864,6 +2366,14 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
                 Ok(ResOp::PutFh(Err(st)))
             } else {
                 Ok(ResOp::PutFh(Ok(())))
+            }
+        }
+        OP_SAVEFH => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                Ok(ResOp::SaveFh(Err(st)))
+            } else {
+                Ok(ResOp::SaveFh(Ok(())))
             }
         }
         OP_OPEN => {
@@ -1933,6 +2443,59 @@ fn decode_resop(r: &mut XdrReader<'_>, op: u32) -> Result<ResOp> {
             }
             let path = r.get_string()?;
             Ok(ResOp::ReadLink(Ok(ReadLinkOk { path })))
+        }
+        OP_LINK => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::Link(Err(st)));
+            }
+            let cinfo = decode_change_info4(r)?;
+            Ok(ResOp::Link(Ok(LinkOk { cinfo })))
+        }
+        OP_REMOVE => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::Remove(Err(st)));
+            }
+            let cinfo = decode_change_info4(r)?;
+            Ok(ResOp::Remove(Ok(RemoveOk { cinfo })))
+        }
+        OP_RENAME => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::Rename(Err(st)));
+            }
+            let source_cinfo = decode_change_info4(r)?;
+            let target_cinfo = decode_change_info4(r)?;
+            Ok(ResOp::Rename(Ok(RenameOk {
+                source_cinfo,
+                target_cinfo,
+            })))
+        }
+        OP_SECINFO => {
+            let st = r.get_u32()?;
+            if st != 0 {
+                return Ok(ResOp::SecInfo(Err(st)));
+            }
+            let flavors = r.get_vec(|r| {
+                let flavor = r.get_u32()?;
+                match flavor {
+                    0 => Ok(SecInfoFlavor::AuthNone),
+                    1 => Ok(SecInfoFlavor::AuthSys),
+                    RPCSEC_GSS => {
+                        let oid = r.get_opaque()?;
+                        let qop = r.get_u32()?;
+                        let service = r.get_u32()?;
+                        Ok(SecInfoFlavor::RpcsecGss(RpcSecGssInfo {
+                            oid,
+                            qop,
+                            service,
+                        }))
+                    }
+                    other => Ok(SecInfoFlavor::Other(other)),
+                }
+            })?;
+            Ok(ResOp::SecInfo(Ok(SecInfoOk { flavors })))
         }
         OP_SETATTR => {
             let st = r.get_u32()?;
@@ -2214,6 +2777,17 @@ fn decode_fattr4_from_reader(r: &mut XdrReader<'_>) -> Result<FileAttr4> {
     let attrset = r.get_vec(|r| r.get_u32())?;
     let attrlist = r.get_opaque()?;
     decode_fattr4(&attrset, &attrlist)
+}
+
+fn decode_change_info4(r: &mut XdrReader<'_>) -> Result<ChangeInfo4> {
+    let atomic = r.get_bool()?;
+    let before = r.get_u64()?;
+    let after = r.get_u64()?;
+    Ok(ChangeInfo4 {
+        atomic,
+        before,
+        after,
+    })
 }
 
 fn decode_deviceid4(r: &mut XdrReader<'_>) -> crate::xdr::Result<DeviceId4> {

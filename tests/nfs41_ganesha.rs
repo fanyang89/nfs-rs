@@ -88,6 +88,75 @@ fn nfs41_ganesha_basic() {
     let link = c.readlink(&linkfh).expect("readlink").expect("nfs ok");
     assert_eq!(link.path, "hello.txt");
 
+    let sec = c
+        .secinfo("/export/hello.txt")
+        .expect("secinfo")
+        .expect("nfs ok");
+    assert!(!sec.flavors.is_empty());
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let dir_path = format!("/export/tmp-{suffix}");
+    let dir_attrs = nfs4::SetAttr4 {
+        mode: Some(0o755),
+        size: None,
+    };
+    let _ = c.mkdir(&dir_path, &dir_attrs).expect("mkdir").expect("nfs ok");
+
+    let symlink_path = format!("{dir_path}/hello-link");
+    let _ = c
+        .symlink(&symlink_path, "hello.txt", &dir_attrs)
+        .expect("symlink")
+        .expect("nfs ok");
+    let symlink_fh = c
+        .lookup_fh(&symlink_path)
+        .expect("lookup symlink")
+        .expect("nfs ok");
+    let symlink_target = c
+        .readlink(&symlink_fh)
+        .expect("readlink symlink")
+        .expect("nfs ok");
+    assert_eq!(symlink_target.path, "hello.txt");
+
+    let file_path = format!("{dir_path}/new.txt");
+    let file_attrs = nfs4::SetAttr4 {
+        mode: Some(0o644),
+        size: None,
+    };
+    let (_, open_ok, fh) = c
+        .open_create_getfh_access(
+            &file_path,
+            nfs4::OPEN4_SHARE_ACCESS_READ | nfs4::OPEN4_SHARE_ACCESS_WRITE,
+            false,
+            &file_attrs,
+        )
+        .expect("open create")
+        .expect("nfs ok");
+    let _ = c
+        .write_at(&fh, &open_ok.stateid, 0, b"data\n", nfs4::STABLE_HOW_FILE_SYNC4)
+        .expect("write")
+        .expect("nfs ok");
+    let _ = c.close_fh(&fh, &open_ok.stateid);
+
+    let renamed_path = format!("{dir_path}/renamed.txt");
+    let _ = c
+        .rename(&file_path, &renamed_path)
+        .expect("rename")
+        .expect("nfs ok");
+
+    let hardlink_path = format!("{dir_path}/hardlink.txt");
+    let _ = c
+        .link(&renamed_path, &hardlink_path)
+        .expect("link")
+        .expect("nfs ok");
+
+    let _ = c.remove(&hardlink_path).expect("remove").expect("nfs ok");
+    let _ = c.remove(&renamed_path).expect("remove").expect("nfs ok");
+    let _ = c.remove(&symlink_path).expect("remove").expect("nfs ok");
+    let _ = c.rmdir(&dir_path).expect("rmdir").expect("nfs ok");
+
     let (_, open_ok, fh) = c
         .open_getfh_access(
             "/export/hello.txt",
