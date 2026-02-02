@@ -1,4 +1,4 @@
-//! High-level NFSv4.1 client (read-only MVP).
+//! High-level NFSv4.1 client (basic read/write + metadata).
 
 use crate::nfs4::{self, Nfs4Error};
 use crate::rpc::{

@@ -47,3 +47,26 @@ Stop the VM:
 ```bash
 ./scripts/vm/nfs41-down.sh
 ```
+
+## NFSv4.1 (user-space via nfs-ganesha)
+
+This repo includes an `nfs-ganesha` submodule that can be used for local
+user-space NFSv4.1 testing without a VM. The tests are gated behind an env var.
+
+Build nfs-ganesha (once):
+
+```bash
+mkdir -p nfs-ganesha/build
+cd nfs-ganesha/build
+cmake ../src
+make -j
+```
+
+Run the ganesha-backed tests:
+
+```bash
+NFS_GANESHA_TESTS=1 NFS_GANESHA_BUILD_DIR=$(pwd) cargo test --test nfs41_ganesha
+```
+
+If you already have `ganesha.nfsd` built elsewhere, set `NFS_GANESHA_BIN`
+to its full path instead of `NFS_GANESHA_BUILD_DIR`.
