@@ -237,14 +237,12 @@ impl TcpRpcClient {
                                 other => Err(RpcError::RpcDenied(format!("reject_stat {other}"))),
                             };
                         }
-                        other => return Err(RpcError::RpcDenied(format!("unknown reply_stat {other}"))),
+                        other => {
+                            return Err(RpcError::RpcDenied(format!("unknown reply_stat {other}")));
+                        }
                     }
                 }
-                other => {
-                    return Err(RpcError::RpcDenied(format!(
-                        "unexpected msg_type {other}"
-                    )))
-                }
+                other => return Err(RpcError::RpcDenied(format!("unexpected msg_type {other}"))),
             }
         }
     }
@@ -284,9 +282,7 @@ const RPC_ACCEPT_PROC_UNAVAIL: u32 = 3;
 fn decode_rpc_call(xid: u32, mut r: XdrReader<'_>, bytes: &[u8]) -> Result<RpcCall> {
     let rpcvers = r.get_u32()?;
     if rpcvers != 2 {
-        return Err(RpcError::RpcDenied(format!(
-            "unexpected rpcvers {rpcvers}"
-        )));
+        return Err(RpcError::RpcDenied(format!("unexpected rpcvers {rpcvers}")));
     }
     let prog = r.get_u32()?;
     let vers = r.get_u32()?;

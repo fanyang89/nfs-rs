@@ -790,9 +790,7 @@ fn decode_mkdir_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<MkdirO
     }))
 }
 
-fn decode_symlink_res(
-    r: &mut XdrReader<'_>,
-) -> Result<core::result::Result<SymlinkOk, NfsError>> {
+fn decode_symlink_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<SymlinkOk, NfsError>> {
     let status = r.get_u32()?;
     if status != 0 {
         let _wcc = decode_wcc_data(r)?;
@@ -842,9 +840,7 @@ fn decode_rmdir_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<WccDat
     Ok(Ok(wcc))
 }
 
-fn decode_rename_res(
-    r: &mut XdrReader<'_>,
-) -> Result<core::result::Result<RenameOk, NfsError>> {
+fn decode_rename_res(r: &mut XdrReader<'_>) -> Result<core::result::Result<RenameOk, NfsError>> {
     let status = r.get_u32()?;
     let from_wcc = decode_wcc_data(r)?;
     let to_wcc = decode_wcc_data(r)?;

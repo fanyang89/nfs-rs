@@ -2203,7 +2203,7 @@ fn decode_fattr4(attrset: &[u32], attrlist: &[u8]) -> Result<FileAttr4> {
             other => {
                 return Err(crate::rpc::RpcError::RpcDenied(format!(
                     "unsupported fattr4 {other}"
-                )))
+                )));
             }
         }
     }

@@ -5,7 +5,7 @@ use nfs_rs::nfs4;
 use std::fs;
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -146,10 +146,7 @@ fn start_ganesha() -> io::Result<Ganesha> {
     let child = cmd.spawn()?;
     wait_for_port(port, Duration::from_secs(10))?;
 
-    Ok(Ganesha {
-        child,
-        port,
-    })
+    Ok(Ganesha { child, port })
 }
 
 fn find_ganesha_bin() -> Option<PathBuf> {
@@ -211,9 +208,11 @@ fn make_temp_dir() -> io::Result<PathBuf> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let dir = PathBuf::from(base)
-        .join("ganesha-test")
-        .join(format!("run-{}-{}", std::process::id(), nanos));
+    let dir = PathBuf::from(base).join("ganesha-test").join(format!(
+        "run-{}-{}",
+        std::process::id(),
+        nanos
+    ));
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -233,10 +232,7 @@ fn populate_export(export_dir: &Path) -> io::Result<()> {
         export_dir.join("hello.txt"),
         fs::Permissions::from_mode(0o666),
     )?;
-    fs::set_permissions(
-        subdir.join("nested.txt"),
-        fs::Permissions::from_mode(0o666),
-    )?;
+    fs::set_permissions(subdir.join("nested.txt"), fs::Permissions::from_mode(0o666))?;
     Ok(())
 }
 
@@ -251,10 +247,7 @@ fn write_config(
     config.push_str(&format!("    NFS_Port = {port};\n"));
     config.push_str("    Protocols = 4;\n");
     if let Some(dir) = plugin_dir {
-        config.push_str(&format!(
-            "    Plugins_Dir = \"{}\";\n",
-            dir.display()
-        ));
+        config.push_str(&format!("    Plugins_Dir = \"{}\";\n", dir.display()));
     }
     config.push_str("}\n");
 

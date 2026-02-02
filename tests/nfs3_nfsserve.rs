@@ -106,10 +106,7 @@ impl TestFs {
         link_child(&mut nodes, ID_SUBDIR, b"nested.txt", ID_NESTED);
 
         Self {
-            state: Arc::new(Mutex::new(TestState {
-                next_id: 6,
-                nodes,
-            })),
+            state: Arc::new(Mutex::new(TestState { next_id: 6, nodes })),
         }
     }
 }
@@ -175,9 +172,7 @@ fn attr_for(node: &Node) -> nfsserve::nfs::fattr3 {
     use nfsserve::nfs::ftype3;
     match &node.kind {
         NodeKind::Dir(_) => attr_with_type(node.id, ftype3::NF3DIR, 0, 0o755),
-        NodeKind::File(data) => {
-            attr_with_type(node.id, ftype3::NF3REG, data.len() as u64, 0o644)
-        }
+        NodeKind::File(data) => attr_with_type(node.id, ftype3::NF3REG, data.len() as u64, 0o644),
         NodeKind::Symlink(target) => {
             attr_with_type(node.id, ftype3::NF3LNK, target.len() as u64, 0o777)
         }
@@ -208,10 +203,7 @@ impl NFSFileSystem for TestFs {
             NodeKind::Dir(children) => children,
             _ => return Err(nfsstat3::NFS3ERR_NOTDIR),
         };
-        children
-            .get(name)
-            .copied()
-            .ok_or(nfsstat3::NFS3ERR_NOENT)
+        children.get(name).copied().ok_or(nfsstat3::NFS3ERR_NOENT)
     }
 
     async fn getattr(
@@ -414,9 +406,7 @@ impl NFSFileSystem for TestFs {
                 }
             }
             Some(Node {
-                kind: NodeKind::File(_)
-                    | NodeKind::Symlink(_)
-                    | NodeKind::Special(_),
+                kind: NodeKind::File(_) | NodeKind::Symlink(_) | NodeKind::Special(_),
                 ..
             }) => false,
             None => return Err(nfsstat3::NFS3ERR_NOENT),
@@ -456,8 +446,8 @@ impl NFSFileSystem for TestFs {
             Some(_) => return Err(nfsstat3::NFS3ERR_NOTDIR),
             None => return Err(nfsstat3::NFS3ERR_NOENT),
         }
-        let id = unlink_child(&mut state.nodes, from_dirid, from_name)
-            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let id =
+            unlink_child(&mut state.nodes, from_dirid, from_name).ok_or(nfsstat3::NFS3ERR_NOENT)?;
         if let Some(existing) = unlink_child(&mut state.nodes, to_dirid, to_name) {
             state.nodes.remove(&existing);
         }
@@ -713,9 +703,7 @@ async fn nfs3_write_roundtrip_using_nfsserve() {
         match nfs3::commit(&mut c.nfs, &fh, 0, 0) {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => panic!("commit nfs error: {e}"),
-            Err(nfs_rs::rpc::RpcError::RpcAcceptedError(msg))
-                if msg.contains("accept_stat 3") =>
-            {
+            Err(nfs_rs::rpc::RpcError::RpcAcceptedError(msg)) if msg.contains("accept_stat 3") => {
                 // nfsserve doesn't implement COMMIT; allow PROC_UNAVAIL.
             }
             Err(e) => panic!("commit call: {e}"),
@@ -787,18 +775,12 @@ async fn nfs3_metadata_and_edgecases_using_nfsserve() {
         assert_ne!(access.access & nfs3::ACCESS3_LOOKUP, 0);
 
         // fsinfo/fsstat/pathconf
-        let fsinfo = c
-            .fsinfo("/")
-            .expect("fsinfo call")
-            .expect("nfs status ok");
+        let fsinfo = c.fsinfo("/").expect("fsinfo call").expect("nfs status ok");
         assert!(fsinfo.maxfilesize > 0);
         assert!(fsinfo.rtmax > 0);
         assert!(fsinfo.wtmax > 0);
 
-        let fsstat = c
-            .fsstat("/")
-            .expect("fsstat call")
-            .expect("nfs status ok");
+        let fsstat = c.fsstat("/").expect("fsstat call").expect("nfs status ok");
         assert!(fsstat.tbytes > 0);
         assert!(fsstat.fbytes > 0);
 
@@ -840,7 +822,11 @@ async fn nfs3_metadata_and_edgecases_using_nfsserve() {
             .expect("mkdir linkdir")
             .expect("nfs status ok");
         let _ = c
-            .symlink("/linkdir/hello_link", "/hello.txt", &nfs3::SetAttr3::default())
+            .symlink(
+                "/linkdir/hello_link",
+                "/hello.txt",
+                &nfs3::SetAttr3::default(),
+            )
             .expect("symlink call")
             .expect("nfs status ok");
         let link = c
@@ -945,10 +931,7 @@ async fn nfs3_metadata_and_edgecases_using_nfsserve() {
                 let _ = c.remove("/hardlink.txt");
             }
             Ok(Err(e)) => panic!("link nfs error: {e}"),
-            Err(nfs_rs::rpc::RpcError::RpcAcceptedError(msg))
-                if msg.contains("accept_stat 3") =>
-            {
-            }
+            Err(nfs_rs::rpc::RpcError::RpcAcceptedError(msg)) if msg.contains("accept_stat 3") => {}
             Err(e) => panic!("link call: {e}"),
         }
 
@@ -961,10 +944,7 @@ async fn nfs3_metadata_and_edgecases_using_nfsserve() {
                 let _ = c.remove("/mknod_fifo");
             }
             Ok(Err(e)) => panic!("mknod nfs error: {e}"),
-            Err(nfs_rs::rpc::RpcError::RpcAcceptedError(msg))
-                if msg.contains("accept_stat 3") =>
-            {
-            }
+            Err(nfs_rs::rpc::RpcError::RpcAcceptedError(msg)) if msg.contains("accept_stat 3") => {}
             Err(e) => panic!("mknod call: {e}"),
         }
     })

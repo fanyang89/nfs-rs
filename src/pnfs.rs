@@ -3,11 +3,12 @@
 use crate::client41::Nfs41Client;
 use crate::nfs3::{self, FileHandle};
 use crate::nfs4::{
-    DeviceAddr4, DeviceId4, FfDataServer4, FfDeviceAddr4, FfLayout4, FfMirror4, Layout4,
-    LayoutContent4, LayoutGetOk, LayoutRecall4, LayoutRecallTarget, Nfs4Error, StateId4,
-    FF_FLAGS_NO_LAYOUTCOMMIT, FF_FLAGS_NO_READ_IO, FF_FLAGS_WRITE_ONE_MIRROR, LAYOUTIOMODE4_ANY,
-    LAYOUTIOMODE4_READ, LAYOUTIOMODE4_RW, LAYOUT4_FLEX_FILES, OPEN4_SHARE_ACCESS_READ,
-    OPEN4_SHARE_ACCESS_WANT_NO_DELEG, OPEN4_SHARE_ACCESS_WRITE, STABLE_HOW_FILE_SYNC4,
+    DeviceAddr4, DeviceId4, FF_FLAGS_NO_LAYOUTCOMMIT, FF_FLAGS_NO_READ_IO,
+    FF_FLAGS_WRITE_ONE_MIRROR, FfDataServer4, FfDeviceAddr4, FfLayout4, FfMirror4,
+    LAYOUT4_FLEX_FILES, LAYOUTIOMODE4_ANY, LAYOUTIOMODE4_READ, LAYOUTIOMODE4_RW, Layout4,
+    LayoutContent4, LayoutGetOk, LayoutRecall4, LayoutRecallTarget, Nfs4Error,
+    OPEN4_SHARE_ACCESS_READ, OPEN4_SHARE_ACCESS_WANT_NO_DELEG, OPEN4_SHARE_ACCESS_WRITE,
+    STABLE_HOW_FILE_SYNC4, StateId4,
 };
 use crate::rpc::{OpaqueAuth, Result, RpcError, TcpRpcClient};
 use std::collections::{HashMap, HashSet};
@@ -159,7 +160,7 @@ impl FlexFilesClient {
                         let _ = self.mds.close_fh(&fh, &open_ok.stateid);
                         return Ok(());
                     }
-                }
+                };
                 let end = (offset as usize + chunk_size as usize).min(data.len());
                 let chunk = &data[offset as usize..end];
                 if let Err(_) = self.write_ds_chunk(l, offset, chunk) {
@@ -294,7 +295,7 @@ impl FlexFilesClient {
                 _ => {
                     return Err(RpcError::RpcAcceptedError(
                         "device addr is not flexfiles".into(),
-                    ))
+                    ));
                 }
             };
             self.device_cache.insert(deviceid.clone(), addr.clone());
@@ -372,13 +373,9 @@ impl FlexFilesClient {
                 .cloned()
                 .collect();
             for layout in matches {
-                let _ = self.mds.layoutreturn(
-                    &layout.fh,
-                    layout.iomode,
-                    0,
-                    u64::MAX,
-                    &layout.stateid,
-                );
+                let _ =
+                    self.mds
+                        .layoutreturn(&layout.fh, layout.iomode, 0, u64::MAX, &layout.stateid);
                 returned.insert(layout.stateid.clone());
             }
         }

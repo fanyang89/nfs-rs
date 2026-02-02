@@ -2,7 +2,7 @@
 
 use crate::nfs4::{self, Nfs4Error};
 use crate::rpc::{
-    OpaqueAuth, Result, RpcCallbackHandler, RpcCall, RpcError, RpcReply, TcpRpcClient,
+    OpaqueAuth, Result, RpcCall, RpcCallbackHandler, RpcError, RpcReply, TcpRpcClient,
 };
 use crate::xdr::{XdrReader, XdrWriter};
 use std::collections::HashMap;
@@ -134,15 +134,12 @@ impl Nfs41Client {
         attr_request: &[u32],
     ) -> Result<core::result::Result<nfs4::GetAttrOk, Nfs4Error>> {
         let sess = self.session_args();
-        let (seqok, gok) = match nfs4::compound_with_session_putfh_getattr(
-            &mut self.rpc,
-            sess,
-            fh,
-            attr_request,
-        )? {
-            Ok(v) => v,
-            Err(e) => return Ok(Err(e)),
-        };
+        let (seqok, gok) =
+            match nfs4::compound_with_session_putfh_getattr(&mut self.rpc, sess, fh, attr_request)?
+            {
+                Ok(v) => v,
+                Err(e) => return Ok(Err(e)),
+            };
         self.seq = seqok.sequenceid.wrapping_add(1);
         Ok(Ok(gok))
     }
@@ -153,15 +150,11 @@ impl Nfs41Client {
         access: u32,
     ) -> Result<core::result::Result<nfs4::AccessOk, Nfs4Error>> {
         let sess = self.session_args();
-        let (seqok, aok) = match nfs4::compound_with_session_putfh_access(
-            &mut self.rpc,
-            sess,
-            fh,
-            access,
-        )? {
-            Ok(v) => v,
-            Err(e) => return Ok(Err(e)),
-        };
+        let (seqok, aok) =
+            match nfs4::compound_with_session_putfh_access(&mut self.rpc, sess, fh, access)? {
+                Ok(v) => v,
+                Err(e) => return Ok(Err(e)),
+            };
         self.seq = seqok.sequenceid.wrapping_add(1);
         Ok(Ok(aok))
     }
@@ -171,14 +164,11 @@ impl Nfs41Client {
         fh: &[u8],
     ) -> Result<core::result::Result<nfs4::ReadLinkOk, Nfs4Error>> {
         let sess = self.session_args();
-        let (seqok, rok) = match nfs4::compound_with_session_putfh_readlink(
-            &mut self.rpc,
-            sess,
-            fh,
-        )? {
-            Ok(v) => v,
-            Err(e) => return Ok(Err(e)),
-        };
+        let (seqok, rok) =
+            match nfs4::compound_with_session_putfh_readlink(&mut self.rpc, sess, fh)? {
+                Ok(v) => v,
+                Err(e) => return Ok(Err(e)),
+            };
         self.seq = seqok.sequenceid.wrapping_add(1);
         Ok(Ok(rok))
     }
@@ -191,7 +181,14 @@ impl Nfs41Client {
         dircount: u32,
         maxcount: u32,
     ) -> Result<core::result::Result<nfs4::ReadDirOk, Nfs4Error>> {
-        self.readdir(fh, cookie, cookieverf, dircount, maxcount, &nfs4::ATTR_READDIR)
+        self.readdir(
+            fh,
+            cookie,
+            cookieverf,
+            dircount,
+            maxcount,
+            &nfs4::ATTR_READDIR,
+        )
     }
 
     pub fn readdir(
@@ -617,10 +614,7 @@ impl RpcCallbackHandler for Nfs4CallbackHandler {
                         }
                         nfs4::CbArgOp::Unknown(opnum) => {
                             status = nfs4::NFS4ERR_OP_ILLEGAL;
-                            res_ops.push(nfs4::CbResOp::Unknown {
-                                op: opnum,
-                                status,
-                            });
+                            res_ops.push(nfs4::CbResOp::Unknown { op: opnum, status });
                             break;
                         }
                     }
