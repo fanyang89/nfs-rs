@@ -7,6 +7,7 @@ pub enum XdrError {
     UnexpectedEof,
     LengthOverflow,
     InvalidBool(u32),
+    InvalidEnum(u32),
     InvalidUtf8,
 }
 
@@ -16,6 +17,7 @@ impl fmt::Display for XdrError {
             XdrError::UnexpectedEof => write!(f, "unexpected end of XDR buffer"),
             XdrError::LengthOverflow => write!(f, "XDR length overflow"),
             XdrError::InvalidBool(v) => write!(f, "invalid XDR bool: {v}"),
+            XdrError::InvalidEnum(v) => write!(f, "invalid XDR enum: {v}"),
             XdrError::InvalidUtf8 => write!(f, "invalid UTF-8 string"),
         }
     }

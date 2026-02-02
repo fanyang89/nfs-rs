@@ -4,12 +4,13 @@ use crate::client41::Nfs41Client;
 use crate::nfs3::{self, FileHandle};
 use crate::nfs4::{
     DeviceAddr4, DeviceId4, FfDataServer4, FfDeviceAddr4, FfLayout4, FfMirror4, Layout4,
-    LayoutContent4, LayoutGetOk, Nfs4Error, FF_FLAGS_NO_LAYOUTCOMMIT, FF_FLAGS_NO_READ_IO,
-    FF_FLAGS_WRITE_ONE_MIRROR, LAYOUTIOMODE4_READ, LAYOUTIOMODE4_RW, OPEN4_SHARE_ACCESS_READ,
+    LayoutContent4, LayoutGetOk, LayoutRecall4, LayoutRecallTarget, Nfs4Error, StateId4,
+    FF_FLAGS_NO_LAYOUTCOMMIT, FF_FLAGS_NO_READ_IO, FF_FLAGS_WRITE_ONE_MIRROR, LAYOUTIOMODE4_ANY,
+    LAYOUTIOMODE4_READ, LAYOUTIOMODE4_RW, LAYOUT4_FLEX_FILES, OPEN4_SHARE_ACCESS_READ,
     OPEN4_SHARE_ACCESS_WANT_NO_DELEG, OPEN4_SHARE_ACCESS_WRITE, STABLE_HOW_FILE_SYNC4,
 };
 use crate::rpc::{OpaqueAuth, Result, RpcError, TcpRpcClient};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 
 #[derive(Debug)]
@@ -21,6 +22,7 @@ pub struct FlexFilesClient {
     default_uid: u32,
     default_gid: u32,
     default_groups: Vec<u32>,
+    active_layouts: Vec<ActiveLayout>,
 }
 
 impl FlexFilesClient {
@@ -33,6 +35,7 @@ impl FlexFilesClient {
             default_uid: 1000,
             default_gid: 1000,
             default_groups: vec![1000],
+            active_layouts: Vec::new(),
         })
     }
 
@@ -65,10 +68,15 @@ impl FlexFilesClient {
             Ok(v) => Some(v),
             Err(_) => None,
         };
+        if let Some(l) = layout.as_ref() {
+            self.register_layout(&fh, LAYOUTIOMODE4_READ, &l.stateid);
+        }
+        self.apply_layout_recalls(&mut layout)?;
 
         let mut out = Vec::new();
         let mut offset = 0u64;
         loop {
+            self.apply_layout_recalls(&mut layout)?;
             let ds_read = match layout.as_ref() {
                 Some(l) => self.read_ds_chunk(l, offset, chunk_size),
                 None => Err(RpcError::RpcAcceptedError("no layout".into())),
@@ -101,6 +109,7 @@ impl FlexFilesClient {
             let _ = self
                 .mds
                 .layoutreturn(&fh, LAYOUTIOMODE4_READ, 0, u64::MAX, &l.stateid);
+            self.unregister_layout(&l.stateid);
         }
         let _ = self.mds.close_fh(&fh, &open_ok.stateid);
         Ok(out)
@@ -115,7 +124,7 @@ impl FlexFilesClient {
             Err(e) => return Err(map_nfs4_err(e)),
         };
 
-        let layout =
+        let mut layout =
             match self
                 .mds
                 .layoutget(&fh, &open_ok.stateid, LAYOUTIOMODE4_RW, 0, u64::MAX, 0, 1)?
@@ -123,6 +132,10 @@ impl FlexFilesClient {
                 Ok(v) => Some(v),
                 Err(_) => None,
             };
+        if let Some(l) = layout.as_ref() {
+            self.register_layout(&fh, LAYOUTIOMODE4_RW, &l.stateid);
+        }
+        self.apply_layout_recalls(&mut layout)?;
 
         let mut offset = 0u64;
         let mut last_write_offset = None;
@@ -138,13 +151,22 @@ impl FlexFilesClient {
 
         if let Some(l) = layout.as_ref() {
             while (offset as usize) < data.len() {
+                self.apply_layout_recalls(&mut layout)?;
+                let l = match layout.as_ref() {
+                    Some(l) => l,
+                    None => {
+                        self.write_via_mds(&fh, &open_ok.stateid, 0, data, chunk_size)?;
+                        let _ = self.mds.close_fh(&fh, &open_ok.stateid);
+                        return Ok(());
+                    }
+                }
                 let end = (offset as usize + chunk_size as usize).min(data.len());
                 let chunk = &data[offset as usize..end];
                 if let Err(_) = self.write_ds_chunk(l, offset, chunk) {
                     let _ = self
                         .mds
                         .layoutreturn(&fh, LAYOUTIOMODE4_RW, 0, u64::MAX, &l.stateid);
-                    self.write_via_mds(&fh, &open_ok.stateid, data, chunk_size)?;
+                    self.write_via_mds(&fh, &open_ok.stateid, 0, data, chunk_size)?;
                     let _ = self.mds.close_fh(&fh, &open_ok.stateid);
                     return Ok(());
                 }
@@ -152,7 +174,7 @@ impl FlexFilesClient {
                 last_write_offset = Some(offset.saturating_sub(1));
             }
         } else {
-            self.write_via_mds(&fh, &open_ok.stateid, data, chunk_size)?;
+            self.write_via_mds(&fh, &open_ok.stateid, 0, data, chunk_size)?;
             let _ = self.mds.close_fh(&fh, &open_ok.stateid);
             return Ok(());
         }
@@ -174,6 +196,7 @@ impl FlexFilesClient {
                 u64::MAX,
                 layout_stateid.as_ref().unwrap(),
             );
+            self.unregister_layout(layout_stateid.as_ref().unwrap());
         }
 
         let _ = self.mds.close_fh(&fh, &open_ok.stateid);
@@ -184,13 +207,14 @@ impl FlexFilesClient {
         &mut self,
         fh: &[u8],
         stateid: &crate::nfs4::StateId4,
+        mut offset: u64,
         data: &[u8],
         chunk_size: u32,
     ) -> Result<()> {
-        let mut offset = 0u64;
-        while (offset as usize) < data.len() {
-            let end = (offset as usize + chunk_size as usize).min(data.len());
-            let chunk = &data[offset as usize..end];
+        let mut pos = 0usize;
+        while pos < data.len() {
+            let end = (pos + chunk_size as usize).min(data.len());
+            let chunk = &data[pos..end];
             let r = self
                 .mds
                 .write_at(fh, stateid, offset, chunk, STABLE_HOW_FILE_SYNC4)?;
@@ -199,6 +223,7 @@ impl FlexFilesClient {
                 Err(e) => return Err(map_nfs4_err(e)),
             }
             offset = offset.saturating_add(chunk.len() as u64);
+            pos = end;
         }
         Ok(())
     }
@@ -306,6 +331,106 @@ impl FlexFilesClient {
         rpc.set_auth(cred);
         Ok(rpc)
     }
+
+    fn register_layout(&mut self, fh: &[u8], iomode: u32, stateid: &StateId4) {
+        self.active_layouts.push(ActiveLayout {
+            fh: fh.to_vec(),
+            iomode,
+            stateid: stateid.clone(),
+        });
+    }
+
+    fn unregister_layout(&mut self, stateid: &StateId4) {
+        self.active_layouts.retain(|l| &l.stateid != stateid);
+    }
+
+    fn apply_layout_recalls(&mut self, layout: &mut Option<LayoutGetOk>) -> Result<()> {
+        let returned = self.handle_layout_recalls()?;
+        if let Some(l) = layout.as_ref() {
+            if returned.contains(&l.stateid) {
+                *layout = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_layout_recalls(&mut self) -> Result<HashSet<StateId4>> {
+        let recalls = self.mds.take_layout_recalls();
+        if recalls.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let mut returned = HashSet::new();
+        for recall in recalls {
+            if recall.layout_type != LAYOUT4_FLEX_FILES {
+                continue;
+            }
+            let matches: Vec<ActiveLayout> = self
+                .active_layouts
+                .iter()
+                .filter(|l| recall_matches_layout(l, &recall))
+                .cloned()
+                .collect();
+            for layout in matches {
+                let _ = self.mds.layoutreturn(
+                    &layout.fh,
+                    layout.iomode,
+                    0,
+                    u64::MAX,
+                    &layout.stateid,
+                );
+                returned.insert(layout.stateid.clone());
+            }
+        }
+
+        self.active_layouts
+            .retain(|l| !returned.contains(&l.stateid));
+        Ok(returned)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ActiveLayout {
+    fh: Vec<u8>,
+    iomode: u32,
+    stateid: StateId4,
+}
+
+fn recall_matches_layout(layout: &ActiveLayout, recall: &LayoutRecall4) -> bool {
+    if !iomode_matches(recall.iomode, layout.iomode) {
+        return false;
+    }
+    match &recall.target {
+        LayoutRecallTarget::All => true,
+        LayoutRecallTarget::Fsid(_) => true,
+        LayoutRecallTarget::File(file) => {
+            if file.fh != layout.fh {
+                return false;
+            }
+            stateid_matches(&file.stateid, &layout.stateid)
+        }
+    }
+}
+
+fn iomode_matches(recall_iomode: u32, layout_iomode: u32) -> bool {
+    if recall_iomode == LAYOUTIOMODE4_ANY {
+        return true;
+    }
+    if recall_iomode == layout_iomode {
+        return true;
+    }
+    recall_iomode == LAYOUTIOMODE4_READ && layout_iomode == LAYOUTIOMODE4_RW
+}
+
+fn stateid_matches(recall_stateid: &StateId4, layout_stateid: &StateId4) -> bool {
+    if is_special_stateid(recall_stateid) {
+        return true;
+    }
+    recall_stateid == layout_stateid
+}
+
+fn is_special_stateid(stateid: &StateId4) -> bool {
+    stateid.seqid == 0 && stateid.other == [0u8; 12]
 }
 
 fn map_nfs4_err(e: Nfs4Error) -> RpcError {
