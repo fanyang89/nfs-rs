@@ -1,4 +1,4 @@
-//! pNFS flexfiles client (MDS over NFSv4.1, DS over NFSv3).
+//! pNFS flexfiles client (MDS over NFSv4.1, DS over NFSv3/NFSv4.1).
 
 use crate::client41::Nfs41Client;
 use crate::nfs3::{self, FileHandle};
@@ -18,7 +18,8 @@ use std::net::{IpAddr, SocketAddr};
 pub struct FlexFilesClient {
     mds: Nfs41Client,
     device_cache: HashMap<DeviceId4, FfDeviceAddr4>,
-    ds_pool: HashMap<SocketAddr, TcpRpcClient>,
+    ds_pool_v3: HashMap<SocketAddr, TcpRpcClient>,
+    ds_pool_v41: HashMap<SocketAddr, Nfs41Client>,
     auth_machine: String,
     default_uid: u32,
     default_gid: u32,
@@ -35,7 +36,8 @@ impl FlexFilesClient {
         Ok(Self {
             mds: Nfs41Client::connect_with_port(server, port)?,
             device_cache: HashMap::new(),
-            ds_pool: HashMap::new(),
+            ds_pool_v3: HashMap::new(),
+            ds_pool_v41: HashMap::new(),
             auth_machine: "nfs-rs".to_string(),
             default_uid: 1000,
             default_gid: 1000,
@@ -82,8 +84,11 @@ impl FlexFilesClient {
         let mut offset = 0u64;
         loop {
             self.apply_layout_recalls(&mut layout)?;
-            let ds_read = match layout.as_ref() {
-                Some(l) => self.read_ds_chunk(l, offset, chunk_size),
+            let ds_read = match layout.as_ref().and_then(|l| layout_for_offset(l, offset)) {
+                Some(_) => {
+                    let count = ds_io_count(layout.as_ref().unwrap(), offset, chunk_size);
+                    self.read_ds_chunk(layout.as_ref().unwrap(), offset, count)
+                }
                 None => Err(RpcError::RpcAcceptedError("no layout".into())),
             };
 
@@ -139,6 +144,7 @@ impl FlexFilesClient {
         self.apply_layout_recalls(&mut layout)?;
 
         let mut offset = 0u64;
+        let mut pos = 0usize;
         let mut last_write_offset = None;
         let mut used_layout = false;
         let mut layout_stateid = None;
@@ -151,27 +157,59 @@ impl FlexFilesClient {
         }
 
         if layout.is_some() {
-            while (offset as usize) < data.len() {
+            while pos < data.len() {
                 self.apply_layout_recalls(&mut layout)?;
-                let l = match layout.as_ref() {
-                    Some(l) => l,
+                let layoutget = match layout.as_ref() {
+                    Some(lg) => lg,
                     None => {
-                        self.write_via_mds(&fh, &open_ok.stateid, 0, data, chunk_size)?;
+                        self.write_via_mds(
+                            &fh,
+                            &open_ok.stateid,
+                            offset,
+                            &data[pos..],
+                            chunk_size,
+                        )?;
                         let _ = self.mds.close_fh(&fh, &open_ok.stateid);
                         return Ok(());
                     }
                 };
-                let end = (offset as usize + chunk_size as usize).min(data.len());
-                let chunk = &data[offset as usize..end];
-                if self.write_ds_chunk(l, offset, chunk).is_err() {
+                if layout_for_offset(layoutget, offset).is_none() {
+                    let stateid = layoutget.stateid.clone();
                     let _ = self
                         .mds
-                        .layoutreturn(&fh, LAYOUTIOMODE4_RW, 0, u64::MAX, &l.stateid);
-                    self.write_via_mds(&fh, &open_ok.stateid, 0, data, chunk_size)?;
+                        .layoutreturn(&fh, LAYOUTIOMODE4_RW, 0, u64::MAX, &stateid);
+                    self.unregister_layout(&stateid);
+                    self.write_via_mds(
+                        &fh,
+                        &open_ok.stateid,
+                        offset,
+                        &data[pos..],
+                        chunk_size,
+                    )?;
+                    let _ = self.mds.close_fh(&fh, &open_ok.stateid);
+                    return Ok(());
+                }
+                let count = ds_io_count(layoutget, offset, chunk_size) as usize;
+                let end = (pos + count).min(data.len());
+                let chunk = &data[pos..end];
+                if self.write_ds_chunk(layoutget, offset, chunk).is_err() {
+                    let stateid = layoutget.stateid.clone();
+                    let _ = self
+                        .mds
+                        .layoutreturn(&fh, LAYOUTIOMODE4_RW, 0, u64::MAX, &stateid);
+                    self.unregister_layout(&stateid);
+                    self.write_via_mds(
+                        &fh,
+                        &open_ok.stateid,
+                        offset,
+                        &data[pos..],
+                        chunk_size,
+                    )?;
                     let _ = self.mds.close_fh(&fh, &open_ok.stateid);
                     return Ok(());
                 }
                 offset = offset.saturating_add(chunk.len() as u64);
+                pos = end;
                 last_write_offset = Some(offset.saturating_sub(1));
             }
         } else {
@@ -234,22 +272,37 @@ impl FlexFilesClient {
         layoutget: &LayoutGetOk,
         offset: u64,
         count: u32,
-    ) -> Result<nfs3::ReadOk> {
+    ) -> Result<DsReadOk> {
         let (_mirror, dss) = select_mirror_and_ds(layoutget, offset)?;
         let (addr, version) = self.device_addr_for(&dss.deviceid)?;
-        if version.version != 3 {
-            return Err(RpcError::RpcAcceptedError(
-                "flexfiles DS is not NFSv3".into(),
-            ));
+        if version.version == 3 {
+            let ds = self.ds_rpc_v3(addr, dss)?;
+            let fh = ds_filehandle(dss)?;
+            let res = nfs3::read(ds, &fh, offset, count)?;
+            let res = res.map_err(map_nfs3_err)?;
+            return Ok(DsReadOk {
+                data: res.data,
+                eof: res.eof,
+            });
         }
-        let ds = self.ds_rpc(addr, dss)?;
-        let fh = ds_filehandle(dss)?;
-        let res = nfs3::read(ds, &fh, offset, count)?;
-        res.map_err(map_nfs3_err)
+        if version.version == 4 && version.minorversion == 1 {
+            let ds = self.ds_rpc_v41(addr, dss)?;
+            let fh = ds_filehandle(dss)?;
+            let res = ds.read_at(&fh.0, &dss.stateid, offset, count)?;
+            let res = res.map_err(map_nfs4_err)?;
+            return Ok(DsReadOk {
+                data: res.data,
+                eof: res.eof,
+            });
+        }
+        Err(RpcError::RpcAcceptedError(
+            "flexfiles DS version unsupported".into(),
+        ))
     }
 
     fn write_ds_chunk(&mut self, layoutget: &LayoutGetOk, offset: u64, data: &[u8]) -> Result<()> {
-        let layout = select_layout(layoutget, offset)?;
+        let layout = layout_for_offset(layoutget, offset)
+            .ok_or_else(|| RpcError::RpcAcceptedError("no layout for offset".into()))?;
         let flex = match &layout.content {
             LayoutContent4::FlexFiles(v) => v,
             _ => return Err(RpcError::RpcAcceptedError("layout is not flexfiles".into())),
@@ -263,17 +316,24 @@ impl FlexFilesClient {
                 .get(dss_id as usize)
                 .ok_or_else(|| RpcError::RpcAcceptedError("invalid dss index".into()))?;
             let (addr, version) = self.device_addr_for(&dss.deviceid)?;
-            if version.version != 3 {
+            if version.version == 3 {
+                let ds = self.ds_rpc_v3(addr, dss)?;
+                let fh = ds_filehandle(dss)?;
+                let res = nfs3::write(ds, &fh, offset, data, nfs3::STABLE_HOW_UNSTABLE)?;
+                res.map_err(map_nfs3_err)?;
+                let res = nfs3::commit(ds, &fh, 0, 0)?;
+                res.map_err(map_nfs3_err)?;
+            } else if version.version == 4 && version.minorversion == 1 {
+                let ds = self.ds_rpc_v41(addr, dss)?;
+                let fh = ds_filehandle(dss)?;
+                let res =
+                    ds.write_at(&fh.0, &dss.stateid, offset, data, STABLE_HOW_FILE_SYNC4)?;
+                res.map_err(map_nfs4_err)?;
+            } else {
                 return Err(RpcError::RpcAcceptedError(
-                    "flexfiles DS is not NFSv3".into(),
+                    "flexfiles DS version unsupported".into(),
                 ));
             }
-            let ds = self.ds_rpc(addr, dss)?;
-            let fh = ds_filehandle(dss)?;
-            let res = nfs3::write(ds, &fh, offset, data, nfs3::STABLE_HOW_UNSTABLE)?;
-            res.map_err(map_nfs3_err)?;
-            let res = nfs3::commit(ds, &fh, 0, 0)?;
-            res.map_err(map_nfs3_err)?;
         }
         Ok(())
     }
@@ -307,29 +367,33 @@ impl FlexFilesClient {
             .iter()
             .find_map(parse_netaddr)
             .ok_or_else(|| RpcError::RpcAcceptedError("no usable netaddr".into()))?;
-        let version = dev
-            .versions
-            .iter()
-            .find(|v| v.version == 3)
-            .cloned()
-            .ok_or_else(|| RpcError::RpcAcceptedError("no NFSv3 version".into()))?;
+        let version = select_device_version(&dev.versions)
+            .ok_or_else(|| RpcError::RpcAcceptedError("no supported DS version".into()))?;
         Ok((addr, version))
     }
 
-    fn ds_rpc(&mut self, addr: SocketAddr, dss: &FfDataServer4) -> Result<&mut TcpRpcClient> {
-        if let std::collections::hash_map::Entry::Vacant(entry) = self.ds_pool.entry(addr) {
+    fn ds_rpc_v3(&mut self, addr: SocketAddr, dss: &FfDataServer4) -> Result<&mut TcpRpcClient> {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.ds_pool_v3.entry(addr) {
             let rpc = TcpRpcClient::connect(&addr.to_string())?;
             entry.insert(rpc);
         }
-        let rpc = self.ds_pool.get_mut(&addr).unwrap();
-        let cred = auth_from_ffds(
-            &self.auth_machine,
-            self.default_uid,
-            self.default_gid,
-            &self.default_groups,
-            dss,
-        );
+        let rpc = self.ds_pool_v3.get_mut(&addr).unwrap();
+        let (uid, gid, groups) =
+            auth_sys_ids_from_ffds(self.default_uid, self.default_gid, &self.default_groups, dss);
+        let cred = OpaqueAuth::auth_sys(&self.auth_machine, uid, gid, &groups);
         rpc.set_auth(cred);
+        Ok(rpc)
+    }
+
+    fn ds_rpc_v41(&mut self, addr: SocketAddr, dss: &FfDataServer4) -> Result<&mut Nfs41Client> {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.ds_pool_v41.entry(addr) {
+            let rpc = Nfs41Client::connect_ds(&addr.ip().to_string(), addr.port())?;
+            entry.insert(rpc);
+        }
+        let rpc = self.ds_pool_v41.get_mut(&addr).unwrap();
+        let (uid, gid, groups) =
+            auth_sys_ids_from_ffds(self.default_uid, self.default_gid, &self.default_groups, dss);
+        rpc.set_auth_sys(&self.auth_machine, uid, gid, &groups);
         Ok(rpc)
     }
 
@@ -459,13 +523,30 @@ fn parse_universal_address(addr: &str) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, port))
 }
 
-fn auth_from_ffds(
-    machine: &str,
+fn select_device_version(
+    versions: &[crate::nfs4::FfDeviceVersion4],
+) -> Option<crate::nfs4::FfDeviceVersion4> {
+    if let Some(v) = versions
+        .iter()
+        .find(|v| v.version == 4 && v.minorversion == 1)
+    {
+        return Some(v.clone());
+    }
+    versions.iter().find(|v| v.version == 3).cloned()
+}
+
+#[derive(Debug)]
+struct DsReadOk {
+    data: Vec<u8>,
+    eof: bool,
+}
+
+fn auth_sys_ids_from_ffds(
     default_uid: u32,
     default_gid: u32,
     default_groups: &[u32],
     dss: &FfDataServer4,
-) -> OpaqueAuth {
+) -> (u32, u32, Vec<u32>) {
     let uid = dss.user.parse().unwrap_or(default_uid);
     let gid = dss.group.parse().unwrap_or(default_gid);
     let groups: Vec<u32> = if default_groups.is_empty() {
@@ -473,7 +554,7 @@ fn auth_from_ffds(
     } else {
         default_groups.to_vec()
     };
-    OpaqueAuth::auth_sys(machine, uid, gid, &groups)
+    (uid, gid, groups)
 }
 
 fn select_layout(layoutget: &LayoutGetOk, offset: u64) -> Result<&Layout4> {
@@ -494,11 +575,55 @@ fn select_layout(layoutget: &LayoutGetOk, offset: u64) -> Result<&Layout4> {
     best.ok_or_else(|| RpcError::RpcAcceptedError("empty layout".into()))
 }
 
+fn layout_for_offset(layoutget: &LayoutGetOk, offset: u64) -> Option<&Layout4> {
+    for l in &layoutget.layout {
+        let end = layout_end(l);
+        if offset >= l.offset && offset < end {
+            return Some(l);
+        }
+    }
+    None
+}
+
+fn layout_end(layout: &Layout4) -> u64 {
+    if layout.length == u64::MAX {
+        u64::MAX
+    } else {
+        layout.offset.saturating_add(layout.length)
+    }
+}
+
+fn ds_io_count(layoutget: &LayoutGetOk, offset: u64, max_count: u32) -> u32 {
+    let layout = match layout_for_offset(layoutget, offset) {
+        Some(l) => l,
+        None => return max_count,
+    };
+    let mut count = max_count as u64;
+    let end = layout_end(layout);
+    if end != u64::MAX {
+        count = count.min(end.saturating_sub(offset));
+    }
+    if let LayoutContent4::FlexFiles(flex) = &layout.content {
+        let stripe_unit = flex.stripe_unit;
+        if stripe_unit > 0 {
+            let stripe_offset = offset % stripe_unit;
+            let stripe_remaining = stripe_unit - stripe_offset;
+            count = count.min(stripe_remaining);
+        }
+    }
+    if count == 0 {
+        1
+    } else {
+        count as u32
+    }
+}
+
 fn select_mirror_and_ds(
     layoutget: &LayoutGetOk,
     offset: u64,
 ) -> Result<(&FfMirror4, &FfDataServer4)> {
-    let layout = select_layout(layoutget, offset)?;
+    let layout = layout_for_offset(layoutget, offset)
+        .ok_or_else(|| RpcError::RpcAcceptedError("no layout for offset".into()))?;
     let flex = match &layout.content {
         LayoutContent4::FlexFiles(v) => v,
         _ => return Err(RpcError::RpcAcceptedError("layout is not flexfiles".into())),
