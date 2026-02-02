@@ -9,7 +9,9 @@ Currently implemented (MVP):
 - NFS v3: `GETATTR`, `SETATTR`, `LOOKUP`, `ACCESS`, `READLINK`, `READ`, `WRITE`,
   `CREATE`, `MKDIR`, `SYMLINK`, `MKNOD`, `REMOVE`, `RMDIR`, `RENAME`, `LINK`,
   `READDIR`, `READDIRPLUS`, `FSSTAT`, `FSINFO`, `PATHCONF`, `COMMIT`
-- NFS v4.1: session handshake + `LOOKUP`/`GETFH`/`READ`/`WRITE` + basic `ACCESS`/`GETATTR`/`READDIR`/`READLINK`/`SETATTR`
+- NFS v4.1: session handshake + `LOOKUP`/`GETFH`/`OPEN`/`READ`/`WRITE`/`CLOSE`
+- pNFS flexfiles: `LAYOUTGET`/`GETDEVICEINFO`/`LAYOUTCOMMIT`/`LAYOUTRETURN`
+  (MDS over NFSv4.1, DS over NFSv3)
 
 ## Quick start (NFSv3)
 
