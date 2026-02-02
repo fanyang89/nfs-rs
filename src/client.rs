@@ -74,6 +74,199 @@ impl Nfs3Client {
         Ok(Ok(cur))
     }
 
+    pub fn getattr(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs3::Fattr3, nfs3::NfsError>> {
+        let fh = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::getattr(&mut self.nfs, &fh)
+    }
+
+    pub fn setattr(
+        &mut self,
+        path: &str,
+        attrs: &nfs3::SetAttr3,
+        guard: Option<nfs3::Time3>,
+    ) -> Result<core::result::Result<nfs3::WccData, nfs3::NfsError>> {
+        let fh = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::setattr(&mut self.nfs, &fh, attrs, guard)
+    }
+
+    pub fn access(
+        &mut self,
+        path: &str,
+        access: u32,
+    ) -> Result<core::result::Result<nfs3::AccessOk, nfs3::NfsError>> {
+        let fh = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::access(&mut self.nfs, &fh, access)
+    }
+
+    pub fn readlink(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs3::ReadLinkOk, nfs3::NfsError>> {
+        let fh = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::readlink(&mut self.nfs, &fh)
+    }
+
+    pub fn create(
+        &mut self,
+        path: &str,
+        how: &nfs3::CreateHow3,
+    ) -> Result<core::result::Result<nfs3::CreateOk, nfs3::NfsError>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir = match self.lookup_path(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::create(&mut self.nfs, &dir, name, how)
+    }
+
+    pub fn mkdir(
+        &mut self,
+        path: &str,
+        attrs: &nfs3::SetAttr3,
+    ) -> Result<core::result::Result<nfs3::MkdirOk, nfs3::NfsError>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir = match self.lookup_path(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::mkdir(&mut self.nfs, &dir, name, attrs)
+    }
+
+    pub fn symlink(
+        &mut self,
+        path: &str,
+        link_path: &str,
+        attrs: &nfs3::SetAttr3,
+    ) -> Result<core::result::Result<nfs3::SymlinkOk, nfs3::NfsError>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir = match self.lookup_path(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::symlink(&mut self.nfs, &dir, name, link_path, attrs)
+    }
+
+    pub fn mknod(
+        &mut self,
+        path: &str,
+        data: &nfs3::MknodData,
+        attrs: &nfs3::SetAttr3,
+    ) -> Result<core::result::Result<nfs3::MknodOk, nfs3::NfsError>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir = match self.lookup_path(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::mknod(&mut self.nfs, &dir, name, data, attrs)
+    }
+
+    pub fn remove(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs3::WccData, nfs3::NfsError>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir = match self.lookup_path(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::remove(&mut self.nfs, &dir, name)
+    }
+
+    pub fn rmdir(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs3::WccData, nfs3::NfsError>> {
+        let (dir_path, name) = split_parent(path)?;
+        let dir = match self.lookup_path(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::rmdir(&mut self.nfs, &dir, name)
+    }
+
+    pub fn rename(
+        &mut self,
+        from: &str,
+        to: &str,
+    ) -> Result<core::result::Result<nfs3::RenameOk, nfs3::NfsError>> {
+        let (from_dir_path, from_name) = split_parent(from)?;
+        let (to_dir_path, to_name) = split_parent(to)?;
+        let from_dir = match self.lookup_path(from_dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let to_dir = match self.lookup_path(to_dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::rename(&mut self.nfs, &from_dir, from_name, &to_dir, to_name)
+    }
+
+    pub fn link(
+        &mut self,
+        existing_path: &str,
+        new_path: &str,
+    ) -> Result<core::result::Result<nfs3::LinkOk, nfs3::NfsError>> {
+        let fh = match self.lookup_path(existing_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        let (dir_path, name) = split_parent(new_path)?;
+        let dir = match self.lookup_path(dir_path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::link(&mut self.nfs, &fh, &dir, name)
+    }
+
+    pub fn fsstat(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs3::FsStatOk, nfs3::NfsError>> {
+        let fh = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::fsstat(&mut self.nfs, &fh)
+    }
+
+    pub fn fsinfo(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs3::FsInfoOk, nfs3::NfsError>> {
+        let fh = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::fsinfo(&mut self.nfs, &fh)
+    }
+
+    pub fn pathconf(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<nfs3::PathConfOk, nfs3::NfsError>> {
+        let fh = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        nfs3::pathconf(&mut self.nfs, &fh)
+    }
+
     pub fn readdirplus_all(
         &mut self,
         path: &str,
@@ -89,6 +282,37 @@ impl Nfs3Client {
         loop {
             let res =
                 nfs3::readdirplus(&mut self.nfs, &dir, cookie, verifier, 8 * 1024, 64 * 1024)?;
+            let ok = match res {
+                Ok(v) => v,
+                Err(e) => return Ok(Err(e)),
+            };
+
+            verifier = ok.verifier;
+            if let Some(last) = ok.entries.last() {
+                cookie = last.cookie;
+            }
+            out.extend(ok.entries);
+            if ok.eof {
+                break;
+            }
+        }
+        Ok(Ok(out))
+    }
+
+    pub fn readdir_all(
+        &mut self,
+        path: &str,
+    ) -> Result<core::result::Result<Vec<nfs3::DirEntry>, nfs3::NfsError>> {
+        let dir = match self.lookup_path(path)? {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+
+        let mut cookie = 0u64;
+        let mut verifier = [0u8; 8];
+        let mut out = Vec::new();
+        loop {
+            let res = nfs3::readdir(&mut self.nfs, &dir, cookie, verifier, 64 * 1024)?;
             let ok = match res {
                 Ok(v) => v,
                 Err(e) => return Ok(Err(e)),
@@ -134,5 +358,17 @@ impl Nfs3Client {
             }
         }
         Ok(Ok(out))
+    }
+}
+
+fn split_parent(path: &str) -> Result<(&str, &str)> {
+    let p = path.trim_matches('/');
+    if p.is_empty() {
+        return Err(RpcError::RpcDenied("path is empty".into()));
+    }
+    match p.rsplit_once('/') {
+        Some((dir, name)) if !name.is_empty() => Ok((dir, name)),
+        None => Ok(("", p)),
+        _ => Err(RpcError::RpcDenied("invalid path".into())),
     }
 }

@@ -6,8 +6,10 @@ Currently implemented (MVP):
 - ONC RPC over TCP (record marking)
 - PORTMAP v2: `GETPORT`
 - MOUNT v3: `MNT`
-- NFS v3: `GETATTR`, `LOOKUP`, `READ`
-- NFS v4.1: session handshake + `LOOKUP`/`GETFH`/`READ` (read-only)
+- NFS v3: `GETATTR`, `SETATTR`, `LOOKUP`, `ACCESS`, `READLINK`, `READ`, `WRITE`,
+  `CREATE`, `MKDIR`, `SYMLINK`, `MKNOD`, `REMOVE`, `RMDIR`, `RENAME`, `LINK`,
+  `READDIR`, `READDIRPLUS`, `FSSTAT`, `FSINFO`, `PATHCONF`, `COMMIT`
+- NFS v4.1: session handshake + `LOOKUP`/`GETFH`/`READ`/`WRITE` + basic `ACCESS`/`GETATTR`/`READDIR`/`READLINK`/`SETATTR`
 
 ## Quick start (NFSv3)
 
